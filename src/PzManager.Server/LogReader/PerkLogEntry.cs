@@ -1,6 +1,5 @@
 ﻿namespace PzManager.Server.LogReader;
 
-public sealed record RawLogEntry(
+public sealed record PerkLogEntry(
     DateTime Timestamp,
-    string Message
-);
+    string Line);
