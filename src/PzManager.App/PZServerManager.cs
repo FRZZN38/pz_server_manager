@@ -45,7 +45,8 @@ public static class Program
 
         Log.Info($"Perk log path: {perkLogPath}");
 
-        var bot = new DiscordBot();
+        var playerService = new PlayerService();
+        var bot = new DiscordBot(playerService);
 
         await bot.Connect(
             settings.Discord.Token,
@@ -53,7 +54,6 @@ public static class Program
 
         var discord = new DiscordEventHandler(bot);
 
-        var playerService = new PlayerService();
         var reader = new PerkLogReader();
         var parser = new SkillLogParser();
 

@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\PzManager.Core\PzManager.Core.csproj" />
     <ProjectReference Include="..\..\src\PzManager.Server\PzManager.Server.csproj" />
+    <ProjectReference Include="..\..\src\PzManager.Discord\PzManager.Discord.csproj" />
   </ItemGroup>
 
 </Project>
