@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PzManager.Core\PzManager.Core.csproj" />
+    <ProjectReference Include="..\PzManager.Server\PzManager.Server.csproj" />
   </ItemGroup>
 
   <ItemGroup>

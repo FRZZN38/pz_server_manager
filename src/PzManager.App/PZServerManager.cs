@@ -1,29 +1,38 @@
 using Microsoft.Extensions.Configuration;
-using PzManager.Core.Logger;
 using PzManager.Core.Services;
 using PzManager.Discord;
+using PzManager.Server;
 using PzManager.Server.LogReader;
 using PzManager.Server.Parsers;
 
 namespace PzManager.App;
 
-public sealed class AppSettings
-{
-    public DiscordSettings Discord { get; init; } = new();
-
-    public ProjectZomboidSettings ProjectZomboid { get; init; } = new();
-}
-
 public sealed class DiscordSettings
 {
-    public string Token { get; init; } = string.Empty;
+    public DiscordSettings(
+        string token,
+        ulong publicChannelId,
+        ulong adminChannelId)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException("Discord:Token is required.");
 
-    public ulong ChannelId { get; init; }
-}
+        if (publicChannelId == 0)
+            throw new InvalidOperationException("Discord:PublicChannelId is required.");
 
-public sealed class ProjectZomboidSettings
-{
-    public string PerkLogDirectory { get; init; } = string.Empty;
+        if (adminChannelId == 0)
+            throw new InvalidOperationException("Discord:AdminChannelId is required.");
+
+        Token = token;
+        PublicChannelId = publicChannelId;
+        AdminChannelId = adminChannelId;
+    }
+
+    public string Token { get; }
+
+    public ulong PublicChannelId { get; }
+
+    public ulong AdminChannelId { get; }
 }
 
 public static class Program
@@ -32,58 +41,60 @@ public static class Program
     {
         var configuration = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
-            .AddJsonFile("appsettings.json", optional: false)
+            .AddJsonFile("appsettings.json", optional:false)
             .Build();
 
-        var settings = configuration.Get<AppSettings>()!;
+        var discordSettings = new DiscordSettings(
+            configuration["Discord:Token"]
+                ?? throw new InvalidOperationException("Discord:Token is required."),
+            configuration.GetValue<ulong>("Discord:PublicChannelId"),
+            configuration.GetValue<ulong>("Discord:AdminChannelId"));
 
-        var perkLogPath = Directory
-            .GetFiles(
-                settings.ProjectZomboid.PerkLogDirectory,
-                "*PerkLog*")
-            .Single();
+        var adminCredentials = new AdminCredentials(
+            configuration["ProjectZomboid:Admin:Username"]
+                ?? throw new InvalidOperationException("ProjectZomboid:Admin:Username is required."),
+            configuration["ProjectZomboid:Admin:Password"]
+                ?? throw new InvalidOperationException("ProjectZomboid:Admin:Password is required."));
 
-        Log.Info($"Perk log path: {perkLogPath}");
+        var projectZomboidSettings = new PzServerSettings(
+            configuration["ProjectZomboid:ServerName"]
+                ?? throw new InvalidOperationException("ProjectZomboid:ServerName is required."),
+            adminCredentials,
+            configuration
+                .GetSection("ProjectZomboid:StartArguments")
+                .Get<string[]>() ?? []);
 
         var playerService = new PlayerService();
+
         var bot = new DiscordBot(playerService);
 
         await bot.Connect(
-            settings.Discord.Token,
-            settings.Discord.ChannelId);
+            discordSettings.Token,
+            discordSettings.PublicChannelId,
+            discordSettings.AdminChannelId);
 
-        var discord = new DiscordEventHandler(bot);
+        var discordEventHandler = new DiscordEventHandler(bot);
 
-        var reader = new PerkLogReader();
-        var parser = new SkillLogParser();
+        var process = new ServerProcess(projectZomboidSettings);
 
-        using var stream = new FileStream(
-            perkLogPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite);
+        var serverManager = new ServerManager(
+            playerService,
+            discordEventHandler,
+            new PerkLogLocator(),
+            new PerkLogReader(),
+            new SkillLogParser(),
+            process,
+            projectZomboidSettings);
 
-        await foreach (var entry in reader.Read(stream))
+        await serverManager.PrepareAsync();
+
+        serverManager.StateChanged += async (_, state) =>
         {
-            var evt = parser.Parse(entry);
+            await bot.SendAdmin(ServerStateFormatter.Build(state));
+        };
 
-            if (evt is null)
-            {
-                Log.Warn("Ignored line.");
-                continue;
-            }
+        await bot.SendAdmin(ServerStateFormatter.Build(serverManager.State));
 
-            try
-            {
-                Log.Info($"Parsed {evt.GetType().Name}");
-
-                playerService.Handle(evt);
-                await discord.Handle(evt);
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex.ToString());
-            }
-        }
+        await serverManager.RunAsync();
     }
 }

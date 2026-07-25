@@ -1,8 +1,9 @@
 using PzManager.Core.Domain;
+using PzManager.Core.Services;
 
 namespace PzManager.Discord;
 
-public sealed class DiscordEventHandler
+public sealed class DiscordEventHandler : IDomainEventSink
 {
     private readonly DiscordBot _bot;
 
