@@ -9,6 +9,7 @@ public sealed class DiscordBot
     private readonly DiscordSocketClient _client;
     private readonly PlayerService _players;
     private IMessageChannel? _channel;
+    private IMessageChannel? _adminChannel;
 
     public DiscordBot(PlayerService players)
     {
@@ -26,16 +27,31 @@ public sealed class DiscordBot
 
     public async Task Connect(
         string token,
-        ulong channelId)
+        ulong channelId,
+        ulong adminChannelId)
     {
+        var readyTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         _client.Ready += () =>
         {
             _channel = _client.GetChannel(channelId) as IMessageChannel;
+            _adminChannel = _client.GetChannel(adminChannelId) as IMessageChannel;
+
+            if (_channel == null)
+                throw new InvalidOperationException(
+                    $"Unable to resolve public channel {channelId}.");
+
+            if (_adminChannel == null)
+                throw new InvalidOperationException(
+                    $"Unable to resolve admin channel {adminChannelId}.");
+
+            readyTcs.TrySetResult();
             return Task.CompletedTask;
         };
 
         await _client.LoginAsync(TokenType.Bot, token);
         await _client.StartAsync();
+        await readyTcs.Task;
     }
 
     private async Task HandleMessageAsync(SocketMessage message)
@@ -81,5 +97,13 @@ public sealed class DiscordBot
             return;
 
         await _channel.SendMessageAsync(message);
+    }
+
+    public async Task SendAdmin(string message)
+    {
+        if (_adminChannel == null)
+            return;
+
+        await _adminChannel.SendMessageAsync(message);
     }
 }

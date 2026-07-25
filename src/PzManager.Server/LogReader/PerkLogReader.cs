@@ -6,13 +6,8 @@ public sealed class PerkLogReader
 {
     private const string TimestampFormat = "dd-MM-yy HH:mm:ss.fff";
 
-    public async IAsyncEnumerable<PerkLogEntry> Read(
-        Stream stream,
-        bool readExisting = false)
+    public async IAsyncEnumerable<PerkLogEntry> Read(Stream stream)
     {
-        if (!readExisting)
-            stream.Seek(0, SeekOrigin.End);
-
         using var reader = new StreamReader(stream);
 
         while (true)
@@ -43,10 +38,8 @@ public sealed class PerkLogReader
         if (end <= 1)
             return false;
 
-        var value = line.Substring(1, end - 1);
-
         return DateTime.TryParseExact(
-            value,
+            line.AsSpan(1, end - 1),
             TimestampFormat,
             CultureInfo.InvariantCulture,
             DateTimeStyles.None,
