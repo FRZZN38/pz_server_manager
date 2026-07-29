@@ -1,6 +1,7 @@
 {
   "Discord": {
     "Token": "YOUR_DISCORD_BOT_TOKEN",
+    "GuildId": 1234567890123456789,
     "PublicChannelId": 1234567890123456789,
     "AdminChannelId": 1234567890123456789
   },

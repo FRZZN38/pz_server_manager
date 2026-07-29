@@ -3,7 +3,7 @@ using PzManager.Core.Logger;
 
 namespace PzManager.Server;
 
-public sealed class ServerProcess
+public sealed class ServerProcess : IServerProcess
 {
     private readonly PzServerSettings _settings;
 
@@ -42,6 +42,8 @@ public sealed class ServerProcess
         if (!File.Exists(script))
             throw new FileNotFoundException(
                 $"Server start script not found: {script}");
+
+        Log.Info($"[SERVER PROCESS] Launching Project Zomboid server process ({script})...");
 
         var startInfo = new ProcessStartInfo
         {
@@ -114,6 +116,8 @@ public sealed class ServerProcess
         _process = process;
         StartedAt = DateTime.UtcNow;
 
+        Log.Info($"[SERVER PROCESS] Process launched (pid={process.Id}).");
+
         return Task.CompletedTask;
     }
 
@@ -130,6 +134,8 @@ public sealed class ServerProcess
         if (process is null || process.HasExited)
             return;
 
+        Log.Info("[SERVER PROCESS] Stopping Project Zomboid server process...");
+
         await SendCommand("save");
         await SendCommand("quit");
 
@@ -139,14 +145,18 @@ public sealed class ServerProcess
         try
         {
             await process.WaitForExitAsync(cts.Token);
+
+            Log.Info("[SERVER PROCESS] Process stopped.");
         }
         catch (OperationCanceledException)
         {
             Log.Warn(
-                "Server did not stop gracefully. Killing process...");
+                "[SERVER PROCESS] Server did not stop gracefully. Killing process...");
 
             process.Kill(true);
             await process.WaitForExitAsync();
+
+            Log.Info("[SERVER PROCESS] Process killed.");
         }
     }
 

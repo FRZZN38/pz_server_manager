@@ -18,7 +18,7 @@ public sealed class PerkLogReaderTests
 
         var reader = new PerkLogReader();
 
-        var entries = await ReadAllAsync(reader, stream);
+        var entries = await ReadAllAsync(reader, stream, expectedCount: 1);
 
         Assert.Single(entries);
 
@@ -44,7 +44,7 @@ invalid
 
         var reader = new PerkLogReader();
 
-        var entries = await ReadAllAsync(reader, stream);
+        var entries = await ReadAllAsync(reader, stream, expectedCount: 1);
 
         Assert.Single(entries);
     }
@@ -67,7 +67,7 @@ invalid
 
         var reader = new PerkLogReader();
 
-        var entries = await ReadAllAsync(reader, stream);
+        var entries = await ReadAllAsync(reader, stream, expectedCount: 1);
 
         Assert.Single(entries);
     }
@@ -87,7 +87,7 @@ invalid
 
         var reader = new PerkLogReader();
 
-        var entries = await ReadAllAsync(reader, stream);
+        var entries = await ReadAllAsync(reader, stream, expectedCount: 2);
 
         Assert.Equal(2, entries.Count);
     }
@@ -95,13 +95,29 @@ invalid
 
     private static async Task<List<PerkLogEntry>> ReadAllAsync(
         PerkLogReader reader,
-        Stream stream)
+        Stream stream,
+        int expectedCount)
     {
+        // PerkLogReader.Read never completes on its own (it tail-follows the
+        // stream), so we cancel once we've seen the expected number of
+        // entries instead of waiting for the enumeration to finish.
+        using var cts = new CancellationTokenSource();
+
         var result = new List<PerkLogEntry>();
 
-        await foreach (var entry in reader.Read(stream))
+        try
         {
-            result.Add(entry);
+            await foreach (var entry in reader.Read(stream, cts.Token))
+            {
+                result.Add(entry);
+
+                if (result.Count >= expectedCount)
+                    cts.Cancel();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected once we've collected the entries we're looking for.
         }
 
         return result;

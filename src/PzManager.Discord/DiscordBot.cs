@@ -1,19 +1,24 @@
 using Discord;
 using Discord.WebSocket;
-using PzManager.Core.Services;
+
+using PzManager.Core.Logger;
 
 namespace PzManager.Discord;
 
-public sealed class DiscordBot
+public sealed class DiscordBot : IDiscordNotifier
 {
     private readonly DiscordSocketClient _client;
-    private readonly PlayerService _players;
     private IMessageChannel? _channel;
     private IMessageChannel? _adminChannel;
 
-    public DiscordBot(PlayerService players)
+    private ulong _guildId;
+
+    private readonly PlayerCommands _playerCommands;
+    private AdminCommands? _adminCommands;
+
+    public DiscordBot(PlayerCommands playerCommands)
     {
-        _players = players;
+        _playerCommands = playerCommands;
 
         _client = new DiscordSocketClient(new DiscordSocketConfig
         {
@@ -22,73 +27,107 @@ public sealed class DiscordBot
                 | GatewayIntents.MessageContent
         });
 
-        _client.MessageReceived += HandleMessageAsync;
+        _client.SlashCommandExecuted += HandleSlashCommandAsync;
+
+        _client.Log += message =>
+        {
+            Log.Info($"[DISCORD.NET] {message.Severity} {message.Source}: {message.Message} {message.Exception}");
+            return Task.CompletedTask;
+        };
+    }
+
+    public void AttachAdminCommands(AdminCommands adminCommands)
+    {
+        _adminCommands = adminCommands;
     }
 
     public async Task Connect(
         string token,
+        ulong guildId,
         ulong channelId,
         ulong adminChannelId)
     {
-        var readyTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _guildId = guildId;
+
+        var readyTcs = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         _client.Ready += () =>
         {
-            _channel = _client.GetChannel(channelId) as IMessageChannel;
-            _adminChannel = _client.GetChannel(adminChannelId) as IMessageChannel;
+            // Discord.Net dispatches this handler on the gateway task, so
+            // awaiting REST calls here directly blocks heartbeats. Offload
+            // the work to a background task instead.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    Log.Info("[DISCORD] Ready event received. Resolving channels...");
 
-            if (_channel == null)
-                throw new InvalidOperationException(
-                    $"Unable to resolve public channel {channelId}.");
+                    _channel = _client.GetChannel(channelId) as IMessageChannel;
+                    _adminChannel = _client.GetChannel(adminChannelId) as IMessageChannel;
 
-            if (_adminChannel == null)
-                throw new InvalidOperationException(
-                    $"Unable to resolve admin channel {adminChannelId}.");
+                    if (_channel == null)
+                        throw new InvalidOperationException(
+                            $"Unable to resolve public channel {channelId}.");
 
-            readyTcs.TrySetResult();
+                    if (_adminChannel == null)
+                        throw new InvalidOperationException(
+                            $"Unable to resolve admin channel {adminChannelId}.");
+
+                    Log.Info("[DISCORD] Channels resolved. Registering commands...");
+
+                    await _playerCommands.Register(
+                        _client,
+                        _guildId);
+
+                    if (_adminCommands is not null)
+                        await _adminCommands.Register(_client, _guildId);
+
+                    Log.Info("[DISCORD] Commands registered.");
+
+                    readyTcs.TrySetResult();
+                }
+                catch (Exception ex)
+                {
+                    readyTcs.TrySetException(ex);
+                }
+            });
+
             return Task.CompletedTask;
         };
 
+        Log.Info("[DISCORD] Logging in...");
         await _client.LoginAsync(TokenType.Bot, token);
+
+        Log.Info("[DISCORD] Logged in. Starting client...");
         await _client.StartAsync();
+
+        Log.Info("[DISCORD] Client started. Waiting for Ready event...");
         await readyTcs.Task;
+
+        Log.Info("[DISCORD] Connect completed.");
     }
 
-    private async Task HandleMessageAsync(SocketMessage message)
+    public async Task Disconnect()
     {
-        if (message.Author.IsBot)
-            return;
+        Log.Info("[DISCORD] Disconnecting...");
 
-        if (_channel == null || message.Channel.Id != _channel.Id)
-            return;
+        await _client.LogoutAsync();
+        await _client.StopAsync();
 
-        var content = message.Content.Trim();
-        if (content.Equals("!help", StringComparison.OrdinalIgnoreCase))
+        Log.Info("[DISCORD] Disconnected.");
+    }
+
+    private async Task HandleSlashCommandAsync(
+        SocketSlashCommand command)
+    {
+        if (_adminCommands is not null && _adminCommands.CanHandle(command.Data.Name))
         {
-            await _channel.SendMessageAsync(BotHelpFormatter.BuildHelpMessage());
+            await _adminCommands.Handle(command);
             return;
         }
 
-        if (content.StartsWith("!player", StringComparison.OrdinalIgnoreCase))
-        {
-            var parts = content.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2)
-            {
-                await _channel.SendMessageAsync("Usage: `!player <username>`");
-                return;
-            }
-
-            var username = parts[1].Trim();
-            var player = _players.GetPlayer(username);
-            if (player == null)
-            {
-                await _channel.SendMessageAsync($"No player found for `{username}`.");
-                return;
-            }
-
-            var embed = PlayerMessageFormatter.BuildSummary(player);
-            await _channel.SendMessageAsync(embed: embed);
-        }
+        await _playerCommands.Handle(command);
     }
 
     public async Task Send(string message)

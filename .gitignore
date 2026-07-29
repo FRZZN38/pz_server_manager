@@ -33,3 +33,6 @@ appsettings.Development.json
 
 # App settings
 appsettings.json
+
+# Downloaded SteamCMD / Project Zomboid dedicated server install
+src/PzManager.Server/Data/

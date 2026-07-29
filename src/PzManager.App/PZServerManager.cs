@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using PzManager.Core.Logger;
 using PzManager.Core.Services;
 using PzManager.Discord;
 using PzManager.Server;
@@ -11,11 +12,15 @@ public sealed class DiscordSettings
 {
     public DiscordSettings(
         string token,
+        ulong guildId,
         ulong publicChannelId,
         ulong adminChannelId)
     {
         if (string.IsNullOrWhiteSpace(token))
             throw new InvalidOperationException("Discord:Token is required.");
+
+        if (guildId == 0)
+            throw new InvalidOperationException("Discord:GuildId is required.");
 
         if (publicChannelId == 0)
             throw new InvalidOperationException("Discord:PublicChannelId is required.");
@@ -24,11 +29,14 @@ public sealed class DiscordSettings
             throw new InvalidOperationException("Discord:AdminChannelId is required.");
 
         Token = token;
+        GuildId = guildId;
         PublicChannelId = publicChannelId;
         AdminChannelId = adminChannelId;
     }
 
     public string Token { get; }
+
+    public ulong GuildId { get; }
 
     public ulong PublicChannelId { get; }
 
@@ -39,14 +47,27 @@ public static class Program
 {
     public static async Task Main(string[] args)
     {
+        var version = System.Reflection.Assembly
+            .GetExecutingAssembly()
+            .GetName()
+            .Version;
+
+        Log.Info($"[APP] PzManager starting up (v{version})...");
+
+        Log.Info("[APP] Loading configuration...");
+
         var configuration = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile("appsettings.json", optional:false)
+            .AddEnvironmentVariables()
             .Build();
+
+        Log.Info("[APP] Configuration loaded.");
 
         var discordSettings = new DiscordSettings(
             configuration["Discord:Token"]
                 ?? throw new InvalidOperationException("Discord:Token is required."),
+            configuration.GetValue<ulong>("Discord:GuildId"),
             configuration.GetValue<ulong>("Discord:PublicChannelId"),
             configuration.GetValue<ulong>("Discord:AdminChannelId"));
 
@@ -62,16 +83,17 @@ public static class Program
             adminCredentials,
             configuration
                 .GetSection("ProjectZomboid:StartArguments")
-                .Get<string[]>() ?? []);
+                .Get<string[]>() ?? [],
+            configuration["ProjectZomboid:ConfigDirectory"],
+            configuration["ProjectZomboid:PerkLogDirectory"]);
 
         var playerService = new PlayerService();
 
-        var bot = new DiscordBot(playerService);
+        var playerCommands =
+            new PlayerCommands(playerService);
 
-        await bot.Connect(
-            discordSettings.Token,
-            discordSettings.PublicChannelId,
-            discordSettings.AdminChannelId);
+        var bot =
+            new DiscordBot(playerCommands);
 
         var discordEventHandler = new DiscordEventHandler(bot);
 
@@ -86,6 +108,19 @@ public static class Program
             process,
             projectZomboidSettings);
 
+        bot.AttachAdminCommands(
+            new AdminCommands(serverManager, discordSettings.AdminChannelId));
+
+        Log.Info("[APP] Connecting to Discord...");
+
+        await bot.Connect(
+            discordSettings.Token,
+            discordSettings.GuildId,
+            discordSettings.PublicChannelId,
+            discordSettings.AdminChannelId);
+
+        Log.Info("[APP] Discord connected. Preparing server...");
+
         await serverManager.PrepareAsync();
 
         serverManager.StateChanged += async (_, state) =>
@@ -95,6 +130,35 @@ public static class Program
 
         await bot.SendAdmin(ServerStateFormatter.Build(serverManager.State));
 
+        var shutdownRequested = 0;
+
+        async Task RequestShutdownAsync()
+        {
+            if (Interlocked.Exchange(ref shutdownRequested, 1) != 0)
+                return;
+
+            Log.Info("[APP] Shutdown requested. Stopping Project Zomboid server...");
+
+            await serverManager.StopAsync();
+
+            await bot.Disconnect();
+        }
+
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            _ = RequestShutdownAsync();
+        };
+
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            RequestShutdownAsync().GetAwaiter().GetResult();
+        };
+
+        Log.Info("[APP] Startup complete. Running server manager loop...");
+
         await serverManager.RunAsync();
+
+        Log.Info("[APP] Server manager loop exited. Shutting down.");
     }
 }

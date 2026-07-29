@@ -23,7 +23,7 @@ public sealed class PerkLogLocatorTests
 
             var locator = new PerkLogLocator();
 
-            var result = locator.Locate(root);
+            var result = locator.Locate(root, DateTime.UtcNow.AddMinutes(-20));
 
             Assert.Equal(newFile, result);
         }
@@ -43,7 +43,7 @@ public sealed class PerkLogLocatorTests
         {
             var locator = new PerkLogLocator();
 
-            Assert.Throws<FileNotFoundException>(() => locator.Locate(root));
+            Assert.Throws<FileNotFoundException>(() => locator.Locate(root, DateTime.UtcNow.AddMinutes(-20)));
         }
         finally
         {
