@@ -9,8 +9,8 @@ public sealed class BotHelpFormatterTests
     {
         var message = BotHelpFormatter.BuildHelpMessage();
 
-        Assert.Contains("!player <username>", message);
-        Assert.Contains("!help", message);
+        Assert.Contains("/player <username>", message);
+        Assert.Contains("/help", message);
         Assert.DoesNotContain("Steam ID", message);
     }
 }

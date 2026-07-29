@@ -5,9 +5,9 @@ namespace PzManager.Discord;
 
 public sealed class DiscordEventHandler : IDomainEventSink
 {
-    private readonly DiscordBot _bot;
+    private readonly IDiscordNotifier _bot;
 
-    public DiscordEventHandler(DiscordBot bot)
+    public DiscordEventHandler(IDiscordNotifier bot)
     {
         _bot = bot;
     }
@@ -33,7 +33,7 @@ public sealed class DiscordEventHandler : IDomainEventSink
                 break;
 
             case PlayerSetSkillsEvent:
-                // El resumen inicial de perks no genera mensaje.
+                // The initial perk summary on login doesn't produce a message.
                 break;
 
             default:

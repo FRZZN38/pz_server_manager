@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace PzManager.Server.LogReader;
 
@@ -6,17 +7,19 @@ public sealed class PerkLogReader
 {
     private const string TimestampFormat = "dd-MM-yy HH:mm:ss.fff";
 
-    public async IAsyncEnumerable<PerkLogEntry> Read(Stream stream)
+    public async IAsyncEnumerable<PerkLogEntry> Read(
+        Stream stream,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         using var reader = new StreamReader(stream);
 
         while (true)
         {
-            var line = await reader.ReadLineAsync();
+            var line = await reader.ReadLineAsync(cancellationToken);
 
             if (line is null)
             {
-                await Task.Delay(500);
+                await Task.Delay(500, cancellationToken);
                 continue;
             }
 

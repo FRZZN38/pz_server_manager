@@ -27,20 +27,21 @@ public sealed class PzServerSettings
     public PzServerSettings(
         string serverName,
         AdminCredentials admin,
-        IEnumerable<string>? startArguments = null)
+        IEnumerable<string>? startArguments = null,
+        string? configDirectory = null,
+        string? perkLogDirectory = null)
     {
         ServerName = serverName;
         Admin = admin;
         StartArguments = startArguments?.ToArray() ?? [];
 
-        ConfigDirectory = Path.Combine(
-            AppContext.BaseDirectory,
-            "Data",
-            "Zomboid");
+        ConfigDirectory = string.IsNullOrWhiteSpace(configDirectory)
+            ? Path.Combine(AppContext.BaseDirectory, "Data", "Zomboid")
+            : configDirectory;
 
-        PerkLogDirectory = Path.Combine(
-            ConfigDirectory,
-            "Logs");
+        PerkLogDirectory = string.IsNullOrWhiteSpace(perkLogDirectory)
+            ? Path.Combine(ConfigDirectory, "Logs")
+            : perkLogDirectory;
     }
 
     public string ServerName { get; }
@@ -56,13 +57,25 @@ public sealed class PzServerSettings
 
 public sealed class ServerManager
 {
+    private static readonly TimeSpan DefaultMinCrashBackoff = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DefaultMaxCrashBackoff = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan DefaultCrashBackoffResetThreshold = TimeSpan.FromMinutes(2);
+
     private readonly PlayerService _playerService;
     private readonly IDomainEventSink _eventSink;
     private readonly PerkLogLocator _perkLogLocator;
     private readonly PerkLogReader _reader;
     private readonly SkillLogParser _parser;
     private readonly PzServerSettings _settings;
-    private readonly ServerProcess _process;
+    private readonly IServerProcess _process;
+    private readonly TimeSpan _minCrashBackoff;
+    private readonly TimeSpan _maxCrashBackoff;
+    private readonly TimeSpan _crashBackoffResetThreshold;
+
+    private volatile bool _stopRequested;
+    private volatile bool _restartRequested;
+    private int _crashCount;
+    private DateTime _currentAttemptStartedAt;
 
     private ServerState _state;
 
@@ -76,8 +89,11 @@ public sealed class ServerManager
         PerkLogLocator perkLogLocator,
         PerkLogReader reader,
         SkillLogParser parser,
-        ServerProcess process,
-        PzServerSettings settings)
+        IServerProcess process,
+        PzServerSettings settings,
+        TimeSpan? minCrashBackoff = null,
+        TimeSpan? maxCrashBackoff = null,
+        TimeSpan? crashBackoffResetThreshold = null)
     {
         ArgumentNullException.ThrowIfNull(playerService);
         ArgumentNullException.ThrowIfNull(eventSink);
@@ -94,6 +110,9 @@ public sealed class ServerManager
         _parser = parser;
         _process = process;
         _settings = settings;
+        _minCrashBackoff = minCrashBackoff ?? DefaultMinCrashBackoff;
+        _maxCrashBackoff = maxCrashBackoff ?? DefaultMaxCrashBackoff;
+        _crashBackoffResetThreshold = crashBackoffResetThreshold ?? DefaultCrashBackoffResetThreshold;
 
         _state = new ServerState(
             settings.ServerName,
@@ -123,6 +142,100 @@ public sealed class ServerManager
     public async Task RunAsync(
         CancellationToken cancellationToken = default)
     {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await RunOnceAsync(cancellationToken);
+
+                if (_stopRequested)
+                {
+                    _stopRequested = false;
+                    break;
+                }
+
+                if (_restartRequested)
+                {
+                    _restartRequested = false;
+                    _crashCount = 0;
+                    continue;
+                }
+
+                if (DateTime.UtcNow - _currentAttemptStartedAt >= _crashBackoffResetThreshold)
+                    _crashCount = 0;
+
+                _crashCount++;
+
+                var delay = ComputeCrashBackoff(_crashCount);
+
+                UpdateState(s => s with
+                {
+                    ConnectionState = ServerConnectionState.Crashed
+                });
+
+                Log.Warn(
+                    $"[SERVER MANAGER] Server exited unexpectedly. Restarting in {delay.TotalSeconds:0}s (attempt {_crashCount})...");
+
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Shutting down.
+        }
+
+        UpdateState(s => s with
+        {
+            ConnectionState = ServerConnectionState.Offline
+        });
+    }
+
+    public async Task StopAsync()
+    {
+        Log.Info("[SERVER MANAGER] Stop requested.");
+
+        _stopRequested = true;
+
+        UpdateState(s => s with
+        {
+            ConnectionState = ServerConnectionState.Stopping
+        });
+
+        await _process.Stop();
+    }
+
+    public async Task RestartAsync()
+    {
+        Log.Info("[SERVER MANAGER] Restart requested.");
+
+        _restartRequested = true;
+
+        UpdateState(s => s with
+        {
+            ConnectionState = ServerConnectionState.Restarting
+        });
+
+        await _process.Stop();
+    }
+
+    public Task SaveAsync()
+    {
+        return _process.SendCommand("save");
+    }
+
+    public Task BroadcastAsync(string message)
+    {
+        return _process.SendCommand($"servermsg \"{SanitizeCommandArgument(message)}\"");
+    }
+
+    public Task KickAsync(string username)
+    {
+        return _process.SendCommand($"kickuser \"{SanitizeCommandArgument(username)}\"");
+    }
+
+    private async Task RunOnceAsync(
+        CancellationToken cancellationToken)
+    {
         UpdateState(s => s with
         {
             ConnectionState = ServerConnectionState.Starting
@@ -130,62 +243,83 @@ public sealed class ServerManager
 
         Log.Info("[SERVER MANAGER] Starting Project Zomboid server...");
 
-        await _process.Start();
+        _currentAttemptStartedAt = DateTime.UtcNow;
 
-        await _process.WaitUntilStarted(cancellationToken);
+        using var exitedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        Log.Info("[SERVER MANAGER] Project Zomboid server started.");
+        void OnExited(int exitCode) => exitedCts.Cancel();
 
-        var perkLogPath = await WaitForPerkLogAsync(
-            cancellationToken);
+        _process.Exited += OnExited;
 
-        Log.Info($"[SERVER MANAGER] PerkLog found: {perkLogPath}");
-
-        UpdateState(s => s with
+        try
         {
-            ConnectionState = ServerConnectionState.Running,
-            PerkLogPath = perkLogPath
-        });
+            await _process.Start();
 
-        Log.Info($"[SERVER MANAGER] Watching perk log: {perkLogPath}");
+            await _process.WaitUntilStarted(exitedCts.Token);
 
-        using var stream = new FileStream(
-            perkLogPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite);
+            Log.Info("[SERVER MANAGER] Project Zomboid server started.");
 
-        await foreach (var entry in _reader.Read(stream)
-            .WithCancellation(cancellationToken))
-        {
-            var evt = _parser.Parse(entry);
+            var perkLogPath = await WaitForPerkLogAsync(exitedCts.Token);
 
-            if (evt is null)
-                continue;
+            Log.Info($"[SERVER MANAGER] PerkLog found: {perkLogPath}");
 
-            try
+            UpdateState(s => s with
             {
-                _playerService.Handle(evt);
+                ConnectionState = ServerConnectionState.Running,
+                PerkLogPath = perkLogPath
+            });
 
-                UpdateState(s => s with
+            Log.Info($"[SERVER MANAGER] Watching perk log: {perkLogPath}");
+
+            using var stream = new FileStream(
+                perkLogPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite);
+
+            await foreach (var entry in _reader.Read(stream, exitedCts.Token)
+                .WithCancellation(exitedCts.Token))
+            {
+                var evt = _parser.Parse(entry);
+
+                if (evt is null)
+                    continue;
+
+                try
                 {
-                    LastEventAt = evt.Timestamp,
-                    LastEventType = evt.GetType().Name,
-                    KnownPlayerCount = _playerService.GetPlayers().Count
-                });
+                    _playerService.Handle(evt);
 
-                await _eventSink.Handle(evt);
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex.ToString());
+                    UpdateState(s => s with
+                    {
+                        LastEventAt = evt.Timestamp,
+                        LastEventType = evt.GetType().Name,
+                        KnownPlayerCount = _playerService.GetPlayers().Count
+                    });
+
+                    await _eventSink.Handle(evt);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex.ToString());
+                }
             }
         }
-
-        UpdateState(s => s with
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            ConnectionState = ServerConnectionState.Offline
-        });
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // The process exited (stop, restart or crash) while we were waiting on it.
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[SERVER MANAGER] Server run failed: {ex}");
+        }
+        finally
+        {
+            _process.Exited -= OnExited;
+        }
     }
 
     private async Task<string> WaitForPerkLogAsync(
@@ -209,6 +343,23 @@ public sealed class ServerManager
                     cancellationToken);
             }
         }
+    }
+
+    private TimeSpan ComputeCrashBackoff(int attempt)
+    {
+        var seconds = Math.Min(
+            _minCrashBackoff.TotalSeconds * Math.Pow(2, attempt - 1),
+            _maxCrashBackoff.TotalSeconds);
+
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    private static string SanitizeCommandArgument(string value)
+    {
+        return value
+            .Replace("\r", " ")
+            .Replace("\n", " ")
+            .Replace("\"", "'");
     }
 
     private void UpdateState(

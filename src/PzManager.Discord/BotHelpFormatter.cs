@@ -9,8 +9,8 @@ public static class BotHelpFormatter
             new[]
             {
                 "Available commands:",
-                "`!player <username>` - Show a summary for a player.",
-                "`!help` - Show this help message."
+                "`/player <username>` - Show a summary for a player.",
+                "`/help` - Show this help message."
             });
     }
 }

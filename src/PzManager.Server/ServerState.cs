@@ -8,8 +8,6 @@ public enum ServerConnectionState
 
     Running,
 
-    Saving,
-
     Restarting,
 
     Stopping,
