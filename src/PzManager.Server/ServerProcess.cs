@@ -35,8 +35,7 @@ public sealed class ServerProcess : IServerProcess
         _started = CreateStartedSource();
 
         var script = Path.Combine(
-            AppContext.BaseDirectory,
-            "Scripts",
+            ServerPaths.ScriptsDirectory,
             "start-server.sh");
 
         if (!File.Exists(script))
@@ -61,6 +60,15 @@ public sealed class ServerProcess : IServerProcess
         startInfo.ArgumentList.Add(_settings.Admin.Username);
         startInfo.ArgumentList.Add("-adminpassword");
         startInfo.ArgumentList.Add(_settings.Admin.Password);
+
+        if (_settings.Password is not null)
+        {
+            startInfo.ArgumentList.Add("-password");
+            startInfo.ArgumentList.Add(_settings.Password);
+        }
+
+        foreach (var argument in _settings.StartArguments)
+            startInfo.ArgumentList.Add(argument);
 
         var process = new Process
         {

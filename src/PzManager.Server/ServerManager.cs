@@ -29,14 +29,16 @@ public sealed class PzServerSettings
         AdminCredentials admin,
         IEnumerable<string>? startArguments = null,
         string? configDirectory = null,
-        string? perkLogDirectory = null)
+        string? perkLogDirectory = null,
+        string? password = null)
     {
         ServerName = serverName;
         Admin = admin;
         StartArguments = startArguments?.ToArray() ?? [];
+        Password = string.IsNullOrWhiteSpace(password) ? null : password;
 
         ConfigDirectory = string.IsNullOrWhiteSpace(configDirectory)
-            ? Path.Combine(AppContext.BaseDirectory, "Data", "Zomboid")
+            ? Path.Combine(ServerPaths.DataDirectory, "Zomboid")
             : configDirectory;
 
         PerkLogDirectory = string.IsNullOrWhiteSpace(perkLogDirectory)
@@ -53,6 +55,8 @@ public sealed class PzServerSettings
     public AdminCredentials Admin { get; }
 
     public IReadOnlyList<string> StartArguments { get; }
+
+    public string? Password { get; }
 }
 
 public sealed class ServerManager

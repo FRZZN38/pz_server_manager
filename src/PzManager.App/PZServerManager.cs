@@ -85,7 +85,8 @@ public static class Program
                 .GetSection("ProjectZomboid:StartArguments")
                 .Get<string[]>() ?? [],
             configuration["ProjectZomboid:ConfigDirectory"],
-            configuration["ProjectZomboid:PerkLogDirectory"]);
+            configuration["ProjectZomboid:PerkLogDirectory"],
+            configuration["ProjectZomboid:Password"]);
 
         var playerService = new PlayerService();
 
@@ -120,6 +121,8 @@ public static class Program
             discordSettings.AdminChannelId);
 
         Log.Info("[APP] Discord connected. Preparing server...");
+
+        new ServerConfigProvisioner().Provision(projectZomboidSettings);
 
         await serverManager.PrepareAsync();
 
