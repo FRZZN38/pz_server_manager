@@ -10,6 +10,7 @@
     "Admin": {
       "Username": "admin",
       "Password": "1234567890123456789"
-    }
+    },
+    "Password": "YOUR_SERVER_JOIN_PASSWORD"
   }
 }

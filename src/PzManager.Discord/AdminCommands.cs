@@ -7,7 +7,7 @@ namespace PzManager.Discord;
 
 public sealed class AdminCommands
 {
-    private static readonly string[] CommandNames = ["save", "broadcast", "kick", "restart", "stop"];
+    private static readonly string[] CommandNames = ["save", "broadcast", "kick", "start", "restart", "stop"];
 
     private readonly ServerManager _serverManager;
     private readonly ulong _adminChannelId;
@@ -58,6 +58,11 @@ public sealed class AdminCommands
                 "Player username",
                 isRequired: true);
 
+        var start = new SlashCommandBuilder()
+            .WithName("start")
+            .WithDescription("Start the Project Zomboid server.")
+            .WithDefaultMemberPermissions(GuildPermission.Administrator);
+
         var restart = new SlashCommandBuilder()
             .WithName("restart")
             .WithDescription("Restart the Project Zomboid server.")
@@ -68,7 +73,7 @@ public sealed class AdminCommands
             .WithDescription("Stop the Project Zomboid server.")
             .WithDefaultMemberPermissions(GuildPermission.Administrator);
 
-        foreach (var command in new[] { save, broadcast, kick, restart, stop })
+        foreach (var command in new[] { save, broadcast, kick, start, restart, stop })
         {
             await guild.CreateApplicationCommandAsync(
                 command.Build());
@@ -106,12 +111,44 @@ public sealed class AdminCommands
                 await command.RespondAsync($"👢 Kicked `{username}`.");
                 break;
 
+            case "start":
+                if (_serverManager.State.ConnectionState != ServerConnectionState.Offline)
+                {
+                    await command.RespondAsync(
+                        "⚠️ The server is already running (or starting).",
+                        ephemeral: true);
+
+                    break;
+                }
+
+                await command.RespondAsync("▶️ Starting the server...");
+                await _serverManager.StartAsync();
+                break;
+
             case "restart":
+                if (_serverManager.State.ConnectionState == ServerConnectionState.Offline)
+                {
+                    await command.RespondAsync(
+                        "⚠️ The server isn't running. Use `/start` instead.",
+                        ephemeral: true);
+
+                    break;
+                }
+
                 await command.RespondAsync("🔄 Restarting the server...");
                 await _serverManager.RestartAsync();
                 break;
 
             case "stop":
+                if (_serverManager.State.ConnectionState == ServerConnectionState.Offline)
+                {
+                    await command.RespondAsync(
+                        "⚠️ The server is already stopped.",
+                        ephemeral: true);
+
+                    break;
+                }
+
                 await command.RespondAsync("🛑 Stopping the server...");
                 await _serverManager.StopAsync();
                 break;

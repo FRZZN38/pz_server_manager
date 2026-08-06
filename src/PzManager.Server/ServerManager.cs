@@ -29,14 +29,16 @@ public sealed class PzServerSettings
         AdminCredentials admin,
         IEnumerable<string>? startArguments = null,
         string? configDirectory = null,
-        string? perkLogDirectory = null)
+        string? perkLogDirectory = null,
+        string? password = null)
     {
         ServerName = serverName;
         Admin = admin;
         StartArguments = startArguments?.ToArray() ?? [];
+        Password = string.IsNullOrWhiteSpace(password) ? null : password;
 
         ConfigDirectory = string.IsNullOrWhiteSpace(configDirectory)
-            ? Path.Combine(AppContext.BaseDirectory, "Data", "Zomboid")
+            ? Path.Combine(ServerPaths.DataDirectory, "Zomboid")
             : configDirectory;
 
         PerkLogDirectory = string.IsNullOrWhiteSpace(perkLogDirectory)
@@ -53,6 +55,8 @@ public sealed class PzServerSettings
     public AdminCredentials Admin { get; }
 
     public IReadOnlyList<string> StartArguments { get; }
+
+    public string? Password { get; }
 }
 
 public sealed class ServerManager
@@ -76,6 +80,9 @@ public sealed class ServerManager
     private volatile bool _restartRequested;
     private int _crashCount;
     private DateTime _currentAttemptStartedAt;
+
+    private readonly object _sessionLock = new();
+    private Task? _sessionTask;
 
     private ServerState _state;
 
@@ -188,6 +195,36 @@ public sealed class ServerManager
         {
             ConnectionState = ServerConnectionState.Offline
         });
+    }
+
+    public Task StartAsync()
+    {
+        lock (_sessionLock)
+        {
+            if (_sessionTask is { IsCompleted: false })
+            {
+                Log.Info("[SERVER MANAGER] Start requested but a session is already running.");
+                return Task.CompletedTask;
+            }
+
+            Log.Info("[SERVER MANAGER] Start requested.");
+
+            _sessionTask = RunAsync();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task WaitUntilStoppedAsync()
+    {
+        Task? sessionTask;
+
+        lock (_sessionLock)
+        {
+            sessionTask = _sessionTask;
+        }
+
+        return sessionTask ?? Task.CompletedTask;
     }
 
     public async Task StopAsync()

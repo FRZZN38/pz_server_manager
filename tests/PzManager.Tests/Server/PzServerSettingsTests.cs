@@ -5,16 +5,19 @@ namespace PzManager.Tests.Server;
 public sealed class PzServerSettingsTests
 {
     [Fact]
-    public void Constructor_WithoutOverrides_DefaultsDirectoriesRelativeToAppContext()
+    public void Constructor_WithoutOverrides_DefaultsDirectoriesUnderServerProjectData()
     {
         var settings = new PzServerSettings(
             "TestServer",
             new AdminCredentials("admin", "password"));
 
-        var expectedConfigDirectory = Path.Combine(AppContext.BaseDirectory, "Data", "Zomboid");
+        Assert.EndsWith(
+            Path.Combine("PzManager.Server", "Data", "Zomboid"),
+            settings.ConfigDirectory);
 
-        Assert.Equal(expectedConfigDirectory, settings.ConfigDirectory);
-        Assert.Equal(Path.Combine(expectedConfigDirectory, "Logs"), settings.PerkLogDirectory);
+        Assert.Equal(
+            Path.Combine(settings.ConfigDirectory, "Logs"),
+            settings.PerkLogDirectory);
     }
 
     [Fact]

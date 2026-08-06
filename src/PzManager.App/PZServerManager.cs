@@ -85,7 +85,8 @@ public static class Program
                 .GetSection("ProjectZomboid:StartArguments")
                 .Get<string[]>() ?? [],
             configuration["ProjectZomboid:ConfigDirectory"],
-            configuration["ProjectZomboid:PerkLogDirectory"]);
+            configuration["ProjectZomboid:PerkLogDirectory"],
+            configuration["ProjectZomboid:Password"]);
 
         var playerService = new PlayerService();
 
@@ -121,6 +122,8 @@ public static class Program
 
         Log.Info("[APP] Discord connected. Preparing server...");
 
+        new ServerConfigProvisioner().Provision(projectZomboidSettings);
+
         await serverManager.PrepareAsync();
 
         serverManager.StateChanged += async (_, state) =>
@@ -132,6 +135,9 @@ public static class Program
 
         var shutdownRequested = 0;
 
+        var shutdownCompleted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
         async Task RequestShutdownAsync()
         {
             if (Interlocked.Exchange(ref shutdownRequested, 1) != 0)
@@ -140,8 +146,11 @@ public static class Program
             Log.Info("[APP] Shutdown requested. Stopping Project Zomboid server...");
 
             await serverManager.StopAsync();
+            await serverManager.WaitUntilStoppedAsync();
 
             await bot.Disconnect();
+
+            shutdownCompleted.TrySetResult();
         }
 
         Console.CancelKeyPress += (_, e) =>
@@ -155,10 +164,12 @@ public static class Program
             RequestShutdownAsync().GetAwaiter().GetResult();
         };
 
-        Log.Info("[APP] Startup complete. Running server manager loop...");
+        Log.Info("[APP] Startup complete. Starting Project Zomboid server...");
 
-        await serverManager.RunAsync();
+        await serverManager.StartAsync();
 
-        Log.Info("[APP] Server manager loop exited. Shutting down.");
+        await shutdownCompleted.Task;
+
+        Log.Info("[APP] Shutdown complete.");
     }
 }
