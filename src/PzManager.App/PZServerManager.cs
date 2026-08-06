@@ -135,6 +135,9 @@ public static class Program
 
         var shutdownRequested = 0;
 
+        var shutdownCompleted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
         async Task RequestShutdownAsync()
         {
             if (Interlocked.Exchange(ref shutdownRequested, 1) != 0)
@@ -143,8 +146,11 @@ public static class Program
             Log.Info("[APP] Shutdown requested. Stopping Project Zomboid server...");
 
             await serverManager.StopAsync();
+            await serverManager.WaitUntilStoppedAsync();
 
             await bot.Disconnect();
+
+            shutdownCompleted.TrySetResult();
         }
 
         Console.CancelKeyPress += (_, e) =>
@@ -158,10 +164,12 @@ public static class Program
             RequestShutdownAsync().GetAwaiter().GetResult();
         };
 
-        Log.Info("[APP] Startup complete. Running server manager loop...");
+        Log.Info("[APP] Startup complete. Starting Project Zomboid server...");
 
-        await serverManager.RunAsync();
+        await serverManager.StartAsync();
 
-        Log.Info("[APP] Server manager loop exited. Shutting down.");
+        await shutdownCompleted.Task;
+
+        Log.Info("[APP] Shutdown complete.");
     }
 }

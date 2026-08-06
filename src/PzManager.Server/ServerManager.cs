@@ -81,6 +81,9 @@ public sealed class ServerManager
     private int _crashCount;
     private DateTime _currentAttemptStartedAt;
 
+    private readonly object _sessionLock = new();
+    private Task? _sessionTask;
+
     private ServerState _state;
 
     public ServerState State => _state;
@@ -192,6 +195,36 @@ public sealed class ServerManager
         {
             ConnectionState = ServerConnectionState.Offline
         });
+    }
+
+    public Task StartAsync()
+    {
+        lock (_sessionLock)
+        {
+            if (_sessionTask is { IsCompleted: false })
+            {
+                Log.Info("[SERVER MANAGER] Start requested but a session is already running.");
+                return Task.CompletedTask;
+            }
+
+            Log.Info("[SERVER MANAGER] Start requested.");
+
+            _sessionTask = RunAsync();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task WaitUntilStoppedAsync()
+    {
+        Task? sessionTask;
+
+        lock (_sessionLock)
+        {
+            sessionTask = _sessionTask;
+        }
+
+        return sessionTask ?? Task.CompletedTask;
     }
 
     public async Task StopAsync()
