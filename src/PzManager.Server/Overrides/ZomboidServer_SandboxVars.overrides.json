@@ -1,0 +1,11 @@
+{
+  "SandboxVars.Zombies": "5",
+  "SandboxVars.ZombieRespawn": "3",
+  "SandboxVars.DayLength": "4",
+  "SandboxVars.HoursForLootRespawn": "0",
+  "SandboxVars.MinutesPerPage": "0.25",
+  "SandboxVars.HoursForCorpseRemoval": "72.0",
+  "SandboxVars.WorldItemRemovalList": "\"\"",
+  "SandboxVars.HoursForWorldItemRemoval": "72.0",
+  "SandboxVars.ItemRemovalListBlacklistToggle": "true"
+}

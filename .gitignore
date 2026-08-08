@@ -1,0 +1,39 @@
+# Build results
+bin/
+obj/
+publish/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# VS Code
+.vscode/
+
+# Rider
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# NuGet
+*.nupkg
+
+# Test results
+TestResults/
+coverage/
+*.coverage
+
+# Local configuration
+appsettings.Development.json
+
+# App settings
+appsettings.json
+
+# Downloaded SteamCMD / Project Zomboid dedicated server install
+src/PzManager.Server/Data/
