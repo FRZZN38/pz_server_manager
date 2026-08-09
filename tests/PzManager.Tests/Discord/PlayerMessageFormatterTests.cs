@@ -24,7 +24,7 @@ public sealed class PlayerMessageFormatterTests
 
         Assert.Equal("TestPlayer", embed.Title);
         Assert.Contains(embed.Fields, field => field.Name == "Status" && field.Value?.ToString() == "Alive");
-        Assert.Contains(embed.Fields, field => field.Name == "Hours" && field.Value?.ToString() == "42");
+        Assert.Contains(embed.Fields, field => field.Name == "Hours Survived (in-game)" && field.Value?.ToString() == "42");
         Assert.Contains(embed.Fields, field => field.Name == "Location" && field.Value?.ToString() == "`X:10` `Y:20` `Z:0`");
         Assert.Contains(embed.Fields, field => field.Name == "Skills" && field.Value?.ToString() == "`Woodwork`: **5**\n`Aiming`: **2**\n`Cooking`: **2**");
         Assert.DoesNotContain(embed.Fields, field => field.Name == "Steam ID");

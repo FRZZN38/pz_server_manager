@@ -61,11 +61,12 @@ public sealed class ServerProcess : IServerProcess
         startInfo.ArgumentList.Add("-adminpassword");
         startInfo.ArgumentList.Add(_settings.Admin.Password);
 
-        if (_settings.Password is not null)
-        {
-            startInfo.ArgumentList.Add("-password");
-            startInfo.ArgumentList.Add(_settings.Password);
-        }
+        // The server join password is NOT a CLI option on the dedicated
+        // server binary (it logs "unknown option" and echoes the password
+        // in plaintext to the journal/console). It's set via the .ini's
+        // Password field instead - see ServerConfigProvisioner.SetPredefinedConfig,
+        // which merges PzServerSettings.Password into the .ini overrides the
+        // same way it already does for PublicName.
 
         foreach (var argument in _settings.StartArguments)
             startInfo.ArgumentList.Add(argument);

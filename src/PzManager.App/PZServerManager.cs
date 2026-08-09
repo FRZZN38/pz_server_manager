@@ -86,7 +86,9 @@ public static class Program
                 .Get<string[]>() ?? [],
             configuration["ProjectZomboid:ConfigDirectory"],
             configuration["ProjectZomboid:PerkLogDirectory"],
-            configuration["ProjectZomboid:Password"]);
+            configuration["ProjectZomboid:Password"],
+            configuration["ProjectZomboid:PublicName"],
+            configuration["ProjectZomboid:MaxMemory"]);
 
         var playerService = new PlayerService();
 
@@ -109,8 +111,12 @@ public static class Program
             process,
             projectZomboidSettings);
 
+        var configProvisioner = new ServerConfigProvisioner();
+
+        playerCommands.AttachServerManager(serverManager);
+
         bot.AttachAdminCommands(
-            new AdminCommands(serverManager, discordSettings.AdminChannelId));
+            new AdminCommands(serverManager, configProvisioner, projectZomboidSettings, discordSettings.AdminChannelId));
 
         Log.Info("[APP] Connecting to Discord...");
 
@@ -122,16 +128,16 @@ public static class Program
 
         Log.Info("[APP] Discord connected. Preparing server...");
 
-        new ServerConfigProvisioner().Provision(projectZomboidSettings);
+        configProvisioner.EnsureMaxMemory(projectZomboidSettings);
+        await configProvisioner.BootstrapIfNewAsync(process, projectZomboidSettings);
+        configProvisioner.SetPredefinedConfig(projectZomboidSettings);
 
         await serverManager.PrepareAsync();
 
-        serverManager.StateChanged += async (_, state) =>
+        serverManager.StateChanged += async state =>
         {
-            await bot.SendAdmin(ServerStateFormatter.Build(state));
+            await bot.SendAdmin(ServerStateFormatter.BuildChangeNotification(state));
         };
-
-        await bot.SendAdmin(ServerStateFormatter.Build(serverManager.State));
 
         var shutdownRequested = 0;
 

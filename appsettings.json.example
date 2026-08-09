@@ -11,6 +11,8 @@
       "Username": "admin",
       "Password": "1234567890123456789"
     },
-    "Password": "YOUR_SERVER_JOIN_PASSWORD"
+    "Password": "YOUR_SERVER_JOIN_PASSWORD",
+    "PublicName": "My PZ Server",
+    "MaxMemory": "5g"
   }
 }

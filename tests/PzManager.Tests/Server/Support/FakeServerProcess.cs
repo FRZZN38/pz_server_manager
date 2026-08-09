@@ -17,6 +17,8 @@ public sealed class FakeServerProcess : IServerProcess
 
     public int FailNextStarts { get; set; }
 
+    public Action? OnStart { get; set; }
+
     public IReadOnlyList<string> Commands => _commands;
 
     public event Action<string>? OutputReceived;
@@ -34,6 +36,8 @@ public sealed class FakeServerProcess : IServerProcess
 
         _startedTcs = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+
+        OnStart?.Invoke();
 
         if (FailNextStarts > 0)
         {

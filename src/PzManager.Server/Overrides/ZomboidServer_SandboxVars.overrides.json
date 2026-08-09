@@ -1,0 +1,16 @@
+{
+  "SandboxVars.Zombies": "3",
+  "SandboxVars.ZombieMigrate": "true",
+  "SandboxVars.ZombieRespawn": "4",
+  "SandboxVars.ZombieConfig.PopulationMultiplier": "1.2",
+  "SandboxVars.ZombieConfig.PopulationStartMultiplier": "1.2",
+  "SandboxVars.ZombieConfig.RespawnHours": "0.0",
+  "SandboxVars.ZombieConfig.RedistributeHours": "12.0",
+  "SandboxVars.DayLength": "4",
+  "SandboxVars.HoursForLootRespawn": "0",
+  "SandboxVars.MinutesPerPage": "0.25",
+  "SandboxVars.HoursForCorpseRemoval": "72.0",
+  "SandboxVars.WorldItemRemovalList": "\"\"",
+  "SandboxVars.HoursForWorldItemRemoval": "72.0",
+  "SandboxVars.ItemRemovalListBlacklistToggle": "true"
+}
