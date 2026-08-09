@@ -17,6 +17,13 @@ public enum PzConfigFile
     SandboxVars
 }
 
+/// <summary>
+/// A single field changed by <see cref="ServerConfigProvisioner.SetPredefinedConfig"/>.
+/// <see cref="OldValue"/> is null if the field wasn't present in the file
+/// before the override was applied.
+/// </summary>
+public sealed record ConfigChange(string ParamName, string? OldValue, string NewValue);
+
 public sealed class ServerConfigProvisioner
 {
     private static readonly TimeSpan BootstrapTimeout = TimeSpan.FromMinutes(5);
@@ -171,8 +178,9 @@ public sealed class ServerConfigProvisioner
     /// Restricts to a single file when <paramref name="file"/> is given
     /// (e.g. re-apply only the .ini's overrides); applies to both when null.
     /// </summary>
-    public void SetPredefinedConfig(PzServerSettings settings, PzConfigFile? file = null)
+    public IReadOnlyList<ConfigChange> SetPredefinedConfig(PzServerSettings settings, PzConfigFile? file = null)
     {
+        var changes = new List<ConfigChange>();
         var serverDir = Path.Combine(settings.ConfigDirectory, "Server");
         var onlyBaseFileName = file is null ? null : BaseFileName(file.Value);
 
@@ -210,10 +218,28 @@ public sealed class ServerConfigProvisioner
             if (overrides.Count == 0)
                 continue;
 
+            var oldValues = new Dictionary<string, string?>();
+
+            foreach (var key in overrides.Keys)
+                oldValues[key] = patcher.TryGetValue(destinationPath, key, out var oldValue) ? oldValue : null;
+
             patcher.ApplyOverrides(destinationPath, overrides);
 
             Log.Info($"[SERVER CONFIG] Applied {overrides.Count} predefined override(s) to {destinationFileName}.");
+
+            // Password is never surfaced back (e.g. to Discord) - see the
+            // comment above where it's merged into `overrides`.
+            foreach (var (key, newValue) in overrides)
+            {
+                if (key == "Password")
+                    continue;
+
+                if (oldValues[key] != newValue)
+                    changes.Add(new ConfigChange(key, oldValues[key], newValue));
+            }
         }
+
+        return changes;
     }
 
     /// <summary>

@@ -259,10 +259,11 @@ public sealed class AdminCommands
                 if (setParamName is null)
                 {
                     var setFile = setFileChoice is null ? (PzConfigFile?)null : ParseConfigFile(setFileChoice);
+                    IReadOnlyList<ConfigChange> predefinedChanges;
 
                     try
                     {
-                        _configProvisioner.SetPredefinedConfig(_settings, setFile);
+                        predefinedChanges = _configProvisioner.SetPredefinedConfig(_settings, setFile);
                     }
                     catch (Exception ex)
                     {
@@ -272,8 +273,20 @@ public sealed class AdminCommands
 
                     var scope = setFileChoice is null ? "all files" : DescribeFile(setFileChoice);
 
+                    if (predefinedChanges.Count == 0)
+                    {
+                        await command.FollowupAsync(
+                            $"Server config re-applied ({scope}). No changes.", ephemeral: ephemeral);
+                        break;
+                    }
+
+                    var changeLines = predefinedChanges
+                        .Select(c => $"- `{c.ParamName}`: `{c.OldValue ?? "(unset)"}` -> `{c.NewValue}`");
+
                     await command.FollowupAsync(
-                        $"Server config re-applied ({scope}).{RunningWarningSuffix()}", ephemeral: ephemeral);
+                        $"Server config re-applied ({scope}). Changed:\n{string.Join('\n', changeLines)}"
+                        + RunningWarningSuffix(),
+                        ephemeral: ephemeral);
                     break;
                 }
 
@@ -284,6 +297,27 @@ public sealed class AdminCommands
                     await command.FollowupAsync(
                         "`value` is required when `param_name` is given.", ephemeral: ephemeral);
 
+                    break;
+                }
+
+                string? oldValue;
+
+                try
+                {
+                    oldValue = setFileChoice is null
+                        ? _configProvisioner.GetConfigValue(_settings, setParamName)
+                        : _configProvisioner.GetConfigValue(_settings, ParseConfigFile(setFileChoice), setParamName);
+                }
+                catch (Exception ex)
+                {
+                    await RespondError(command, "set_config", ex, ephemeral);
+                    break;
+                }
+
+                if (oldValue == setValue)
+                {
+                    await command.FollowupAsync(
+                        $"`{setParamName}` is already `{setValue}` - no change.", ephemeral: ephemeral);
                     break;
                 }
 
@@ -301,7 +335,7 @@ public sealed class AdminCommands
                 }
 
                 await command.FollowupAsync(
-                    $"Server config set: `{setParamName} = {setValue}`.{RunningWarningSuffix()}",
+                    $"Server config set: `{setParamName}` from `{oldValue}` to `{setValue}`.{RunningWarningSuffix()}",
                     ephemeral: ephemeral);
                 break;
 
