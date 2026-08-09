@@ -5,7 +5,7 @@ namespace PzManager.Server;
 /// directory (found by walking up from the running executable to the
 /// repository's .sln file), rather than to whichever project's build output
 /// happens to be running. This guarantees a single, stable install location
-/// (Scripts, Templates, Data) regardless of which app hosts ServerManager.
+/// (Scripts, Overrides, Data) regardless of which app hosts ServerManager.
 /// </summary>
 internal static class ServerPaths
 {
@@ -14,8 +14,12 @@ internal static class ServerPaths
     public static string ScriptsDirectory =>
         Path.Combine(RootDirectory, "Scripts");
 
-    public static string TemplatesDirectory =>
-        Path.Combine(RootDirectory, "Templates");
+    // Only field-override JSON files live here (no full config templates,
+    // and nothing sensitive like the server join password - see
+    // ServerConfigProvisioner.BootstrapIfNewAsync for why real config files
+    // are no longer pre-seeded from a checked-in template).
+    public static string OverridesDirectory =>
+        Path.Combine(RootDirectory, "Overrides");
 
     public static string DataDirectory =>
         Path.Combine(RootDirectory, "Data");

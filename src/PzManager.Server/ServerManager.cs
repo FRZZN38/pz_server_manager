@@ -30,12 +30,16 @@ public sealed class PzServerSettings
         IEnumerable<string>? startArguments = null,
         string? configDirectory = null,
         string? perkLogDirectory = null,
-        string? password = null)
+        string? password = null,
+        string? publicName = null,
+        string? maxMemory = null)
     {
         ServerName = serverName;
         Admin = admin;
         StartArguments = startArguments?.ToArray() ?? [];
         Password = string.IsNullOrWhiteSpace(password) ? null : password;
+        PublicName = string.IsNullOrWhiteSpace(publicName) ? null : publicName;
+        MaxMemory = string.IsNullOrWhiteSpace(maxMemory) ? "5g" : maxMemory;
 
         ConfigDirectory = string.IsNullOrWhiteSpace(configDirectory)
             ? Path.Combine(ServerPaths.DataDirectory, "Zomboid")
@@ -57,6 +61,24 @@ public sealed class PzServerSettings
     public IReadOnlyList<string> StartArguments { get; }
 
     public string? Password { get; }
+
+    /// <summary>
+    /// Name shown in the in-game/Steam server browser (ZomboidServer.ini's
+    /// PublicName). Per-deployment like ServerName, so it lives in
+    /// appsettings.json rather than the checked-in Overrides/*.json - handy
+    /// for telling a test run apart from the real server without touching
+    /// tracked files. Null/blank means "leave whatever is already there".
+    /// </summary>
+    public string? PublicName { get; }
+
+    /// <summary>
+    /// JVM -Xmx value enforced on ProjectZomboid64.json (e.g. "5g") to cap
+    /// server memory and avoid OOM. Defaults to "5g". Must be reapplied
+    /// before every launch, not just once, because ProjectZomboid64.json is
+    /// part of the SteamCMD depot and "app_update ... validate" (install or
+    /// update scripts) can silently reset it to whatever the game ships.
+    /// </summary>
+    public string MaxMemory { get; }
 }
 
 public sealed class ServerManager
@@ -77,7 +99,6 @@ public sealed class ServerManager
     private readonly TimeSpan _crashBackoffResetThreshold;
 
     private volatile bool _stopRequested;
-    private volatile bool _restartRequested;
     private int _crashCount;
     private DateTime _currentAttemptStartedAt;
 
@@ -88,7 +109,16 @@ public sealed class ServerManager
 
     public ServerState State => _state;
 
-    public event EventHandler<ServerState>? StateChanged;
+    /// <summary>
+    /// Fires only when ConnectionState itself changes (Starting/Running/
+    /// Stopping/Offline/...), not on every minor field update (player
+    /// events update LastEventAt/KnownPlayerCount far more often than the
+    /// connection state actually changes). Awaited by <see cref="UpdateStateAsync"/>
+    /// rather than fire-and-forget, so callers like Program.cs's shutdown
+    /// sequence can rely on the final Offline notification having actually
+    /// been sent (e.g. to Discord) before disconnecting.
+    /// </summary>
+    public event Func<ServerState, Task>? StateChanged;
 
     public ServerManager(
         PlayerService playerService,
@@ -132,18 +162,16 @@ public sealed class ServerManager
             0);
     }
 
-    public Task PrepareAsync()
+    public async Task PrepareAsync()
     {
         Log.Info($"[SERVER MANAGER] Server name: {_settings.ServerName}");
         Log.Info($"[SERVER MANAGER] Config directory: {_settings.ConfigDirectory}");
         Log.Info($"[SERVER MANAGER] Perk log directory: {_settings.PerkLogDirectory}");
 
-        UpdateState(s => s with
+        await UpdateStateAsync(s => s with
         {
             ConnectionState = ServerConnectionState.Offline
         });
-
-        return Task.CompletedTask;
     }
 
     public async Task RunAsync(
@@ -161,13 +189,6 @@ public sealed class ServerManager
                     break;
                 }
 
-                if (_restartRequested)
-                {
-                    _restartRequested = false;
-                    _crashCount = 0;
-                    continue;
-                }
-
                 if (DateTime.UtcNow - _currentAttemptStartedAt >= _crashBackoffResetThreshold)
                     _crashCount = 0;
 
@@ -175,7 +196,7 @@ public sealed class ServerManager
 
                 var delay = ComputeCrashBackoff(_crashCount);
 
-                UpdateState(s => s with
+                await UpdateStateAsync(s => s with
                 {
                     ConnectionState = ServerConnectionState.Crashed
                 });
@@ -191,7 +212,7 @@ public sealed class ServerManager
             // Shutting down.
         }
 
-        UpdateState(s => s with
+        await UpdateStateAsync(s => s with
         {
             ConnectionState = ServerConnectionState.Offline
         });
@@ -209,6 +230,10 @@ public sealed class ServerManager
 
             Log.Info("[SERVER MANAGER] Start requested.");
 
+            // Every explicit start (initial launch, or after a restart's
+            // stop-then-start) is a deliberate fresh attempt, not a
+            // continuation of whatever crash-backoff streak came before.
+            _crashCount = 0;
             _sessionTask = RunAsync();
         }
 
@@ -233,7 +258,7 @@ public sealed class ServerManager
 
         _stopRequested = true;
 
-        UpdateState(s => s with
+        await UpdateStateAsync(s => s with
         {
             ConnectionState = ServerConnectionState.Stopping
         });
@@ -241,18 +266,20 @@ public sealed class ServerManager
         await _process.Stop();
     }
 
+    /// <summary>
+    /// Literally stop, then start again - no separate "Restarting" state.
+    /// The connection state honestly goes through Stopping -> Offline ->
+    /// Starting -> Running, reusing the same already-tested paths as the
+    /// standalone /stop and /start commands instead of a parallel "restart
+    /// mode" with its own flag and looping logic.
+    /// </summary>
     public async Task RestartAsync()
     {
         Log.Info("[SERVER MANAGER] Restart requested.");
 
-        _restartRequested = true;
-
-        UpdateState(s => s with
-        {
-            ConnectionState = ServerConnectionState.Restarting
-        });
-
-        await _process.Stop();
+        await StopAsync();
+        await WaitUntilStoppedAsync();
+        await StartAsync();
     }
 
     public Task SaveAsync()
@@ -273,7 +300,7 @@ public sealed class ServerManager
     private async Task RunOnceAsync(
         CancellationToken cancellationToken)
     {
-        UpdateState(s => s with
+        await UpdateStateAsync(s => s with
         {
             ConnectionState = ServerConnectionState.Starting
         });
@@ -296,13 +323,24 @@ public sealed class ServerManager
 
             Log.Info("[SERVER MANAGER] Project Zomboid server started.");
 
+            // The PZ process itself reporting "*** SERVER STARTED ***" is
+            // the real signal that it's up and accepting connections - mark
+            // Running here. PerkLog.txt is written by connected player
+            // clients (see ISPerkLog.lua), not by the server on boot, so if
+            // nobody has logged in yet it may not exist for a while (or at
+            // all). Waiting for it before reporting Running left the status
+            // stuck on "Starting" forever on an empty server.
+            await UpdateStateAsync(s => s with
+            {
+                ConnectionState = ServerConnectionState.Running
+            });
+
             var perkLogPath = await WaitForPerkLogAsync(exitedCts.Token);
 
             Log.Info($"[SERVER MANAGER] PerkLog found: {perkLogPath}");
 
-            UpdateState(s => s with
+            await UpdateStateAsync(s => s with
             {
-                ConnectionState = ServerConnectionState.Running,
                 PerkLogPath = perkLogPath
             });
 
@@ -326,7 +364,7 @@ public sealed class ServerManager
                 {
                     _playerService.Handle(evt);
 
-                    UpdateState(s => s with
+                    await UpdateStateAsync(s => s with
                     {
                         LastEventAt = evt.Timestamp,
                         LastEventType = evt.GetType().Name,
@@ -399,10 +437,20 @@ public sealed class ServerManager
             .Replace("\"", "'");
     }
 
-    private void UpdateState(
+    private async Task UpdateStateAsync(
         Func<ServerState, ServerState> update)
     {
+        var previousConnectionState = _state.ConnectionState;
+
         _state = update(_state);
-        StateChanged?.Invoke(this, _state);
+
+        if (_state.ConnectionState == previousConnectionState)
+            return;
+
+        if (StateChanged is null)
+            return;
+
+        foreach (Func<ServerState, Task> handler in StateChanged.GetInvocationList())
+            await handler(_state);
     }
 }

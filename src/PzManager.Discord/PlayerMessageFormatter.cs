@@ -18,7 +18,7 @@ public static class PlayerMessageFormatter
             .WithTitle(player.Username)
             .WithColor(player.Dead ? Color.DarkRed : Color.DarkGreen)
             .AddField("Status", statusText, inline: true)
-            .AddField("Hours", player.HoursSurvived, inline: true)
+            .AddField("Hours Survived (in-game)", player.HoursSurvived, inline: true)
             .AddField("Last Seen", player.LastUpdated.ToString("yyyy-MM-dd HH:mm"), inline: false)
             .AddField("Location", $"`X:{player.Position.X}` `Y:{player.Position.Y}` `Z:{player.Position.Z}`", inline: false);
 

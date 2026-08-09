@@ -1,0 +1,10 @@
+{
+  "PVP": "false",
+  "SafetySystem": "false",
+  "ShowSafety": "false",
+  "PingLimit": "400",
+  "SteamScoreboard": "false",
+  "BloodSplatLifespanDays": "14",
+  "AntiCheatSafety": "2",
+  "AntiCheatHit": "2"
+}

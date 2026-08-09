@@ -76,14 +76,22 @@ public sealed class DiscordBot : IDiscordNotifier
 
                     Log.Info("[DISCORD] Channels resolved. Registering commands...");
 
-                    await _playerCommands.Register(
-                        _client,
-                        _guildId);
+                    var guild = _client.GetGuild(_guildId)
+                        ?? throw new InvalidOperationException($"Unable to resolve guild {_guildId}.");
 
-                    if (_adminCommands is not null)
-                        await _adminCommands.Register(_client, _guildId);
+                    var commands = _playerCommands.BuildCommands()
+                        .Concat(_adminCommands?.BuildCommands() ?? [])
+                        .Select(builder => builder.Build())
+                        .ToArray();
 
-                    Log.Info("[DISCORD] Commands registered.");
+                    // Bulk overwrite replaces the guild's entire command set
+                    // atomically, so any command left over from a previous
+                    // version of the bot (renamed/removed here) disappears
+                    // instead of lingering forever - CreateApplicationCommandAsync
+                    // only adds/updates by name, it never deletes.
+                    await guild.BulkOverwriteApplicationCommandAsync(commands);
+
+                    Log.Info($"[DISCORD] {commands.Length} command(s) registered.");
 
                     readyTcs.TrySetResult();
                 }

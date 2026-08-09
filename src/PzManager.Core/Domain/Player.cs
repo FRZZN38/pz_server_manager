@@ -7,6 +7,13 @@ public sealed class Player
     public string Username { get; set;}
     public Position Position { get; set; }
     public Dictionary<string, Skill> Skills { get; set; } = new();
+
+    /// <summary>
+    /// In-game hours the character has been alive, from PZ's own
+    /// _character:getHoursSurvived() (see ISPerkLog.lua). Simulated world
+    /// time, not real playtime, and resets to 0 whenever the character dies
+    /// and a new one is created.
+    /// </summary>
     public int HoursSurvived { get; set; }
     public bool Dead { get; set; } = false;
 
