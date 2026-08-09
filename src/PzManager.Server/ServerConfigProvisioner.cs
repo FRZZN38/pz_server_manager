@@ -18,11 +18,15 @@ public enum PzConfigFile
 }
 
 /// <summary>
-/// A single field changed by <see cref="ServerConfigProvisioner.SetPredefinedConfig"/>.
-/// <see cref="OldValue"/> is null if the field wasn't present in the file
-/// before the override was applied.
+/// A single field <see cref="ServerConfigProvisioner.SetPredefinedConfig"/>
+/// attempted to set. <see cref="OldValue"/> is null if the field wasn't
+/// present in the file before the override was applied. <see cref="Changed"/>
+/// is false when the field already held the target value (no write needed).
 /// </summary>
-public sealed record ConfigChange(string ParamName, string? OldValue, string NewValue);
+public sealed record ConfigChange(string ParamName, string? OldValue, string NewValue)
+{
+    public bool Changed => OldValue != NewValue;
+}
 
 public sealed class ServerConfigProvisioner
 {
@@ -234,8 +238,7 @@ public sealed class ServerConfigProvisioner
                 if (key == "Password")
                     continue;
 
-                if (oldValues[key] != newValue)
-                    changes.Add(new ConfigChange(key, oldValues[key], newValue));
+                changes.Add(new ConfigChange(key, oldValues[key], newValue));
             }
         }
 

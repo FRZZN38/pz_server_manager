@@ -276,17 +276,35 @@ public sealed class AdminCommands
                     if (predefinedChanges.Count == 0)
                     {
                         await command.FollowupAsync(
-                            $"Server config re-applied ({scope}). No changes.", ephemeral: ephemeral);
+                            $"Server config re-applied ({scope}). Nothing to apply.", ephemeral: ephemeral);
                         break;
                     }
 
-                    var changeLines = predefinedChanges
-                        .Select(c => $"- `{c.ParamName}`: `{c.OldValue ?? "(unset)"}` -> `{c.NewValue}`");
+                    var changed = predefinedChanges.Where(c => c.Changed).ToList();
+                    var unchanged = predefinedChanges.Where(c => !c.Changed).ToList();
 
-                    await command.FollowupAsync(
-                        $"Server config re-applied ({scope}). Changed:\n{string.Join('\n', changeLines)}"
-                        + RunningWarningSuffix(),
-                        ephemeral: ephemeral);
+                    var summary = $"Server config re-applied ({scope}).";
+
+                    if (changed.Count > 0)
+                    {
+                        var changedLines = changed
+                            .Select(c => $"- `{c.ParamName}`: `{c.OldValue ?? "(unset)"}` -> `{c.NewValue}`");
+
+                        summary += $"\nChanged:\n{string.Join('\n', changedLines)}";
+                    }
+
+                    if (unchanged.Count > 0)
+                    {
+                        var unchangedLines = unchanged
+                            .Select(c => $"- `{c.ParamName}`: `{c.NewValue}`");
+
+                        summary += $"\nAlready set:\n{string.Join('\n', unchangedLines)}";
+                    }
+
+                    if (changed.Count > 0)
+                        summary += RunningWarningSuffix();
+
+                    await command.FollowupAsync(summary, ephemeral: ephemeral);
                     break;
                 }
 
