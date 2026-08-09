@@ -16,7 +16,9 @@ public static class ServerStateFormatter
         return state switch
         {
             ServerConnectionState.Starting
-                or ServerConnectionState.Stopping => "⏳",
+                or ServerConnectionState.Stopping
+                or ServerConnectionState.Updating
+                or ServerConnectionState.Creating => "⏳",
             ServerConnectionState.Running => "🟢",
             ServerConnectionState.Offline => "🔴",
             ServerConnectionState.Crashed => "⚠️",
@@ -80,6 +82,8 @@ public static class ServerStateFormatter
             ServerConnectionState.Starting => $"{emoji} The server is starting...",
             ServerConnectionState.Stopping => $"{emoji} The server is stopping...",
             ServerConnectionState.Crashed => $"{emoji} The server crashed and is restarting...",
+            ServerConnectionState.Updating => $"{emoji} The server is updating...",
+            ServerConnectionState.Creating => $"{emoji} Setting up the server for the first time...",
             _ => $"State: {state.ConnectionState}"
         };
     }

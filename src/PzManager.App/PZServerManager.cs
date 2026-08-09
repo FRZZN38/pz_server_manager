@@ -112,11 +112,14 @@ public static class Program
             projectZomboidSettings);
 
         var configProvisioner = new ServerConfigProvisioner();
+        var serverUpdater = new ServerUpdater();
 
         playerCommands.AttachServerManager(serverManager);
 
         bot.AttachAdminCommands(
-            new AdminCommands(serverManager, configProvisioner, projectZomboidSettings, discordSettings.AdminChannelId));
+            new AdminCommands(
+                serverManager, configProvisioner, serverUpdater, process,
+                projectZomboidSettings, discordSettings.AdminChannelId));
 
         Log.Info("[APP] Connecting to Discord...");
 
@@ -128,16 +131,50 @@ public static class Program
 
         Log.Info("[APP] Discord connected. Preparing server...");
 
-        configProvisioner.EnsureMaxMemory(projectZomboidSettings);
-        await configProvisioner.BootstrapIfNewAsync(process, projectZomboidSettings);
-        configProvisioner.SetPredefinedConfig(projectZomboidSettings);
-
-        await serverManager.PrepareAsync();
-
+        // Wired up before bootstrap runs (not after) so a first-ever
+        // install - which starts the game once just to let it generate its
+        // own config, see BootstrapIfNewAsync - shows up in Discord as
+        // "Creating" instead of happening silently before anyone's watching.
         serverManager.StateChanged += async state =>
         {
             await bot.SendAdmin(ServerStateFormatter.BuildChangeNotification(state));
         };
+
+        try
+        {
+            var wasBootstrapped = await configProvisioner.BootstrapIfNewAsync(
+                process, projectZomboidSettings, onBootstrapping: serverManager.BeginCreateAsync);
+
+            if (wasBootstrapped)
+                configProvisioner.SetPredefinedConfig(projectZomboidSettings);
+
+            configProvisioner.EnsureMaxMemory(projectZomboidSettings);
+
+            if (wasBootstrapped)
+                await serverManager.EndCreateAsync();
+        }
+        catch (Exception ex)
+        {
+            // Main is about to let the exception crash the process, same as
+            // before - a fresh ServerManager on the next systemd restart
+            // would start at Offline anyway, making this moot in the common
+            // case. It's not moot if something upstream ever changes to
+            // keep the process alive after this (or restarts are slow/
+            // disabled), so mark Crashed for the same reason AdminCommands
+            // does: whoever looks at /admin_status shouldn't see a state
+            // that quietly lies about what just happened, and Crashed is
+            // the one state that says "try /start or /update_server again".
+            Log.Error($"[APP] Fatal error while preparing the server: {ex}");
+
+            await serverManager.MarkCrashedAsync();
+
+            await bot.SendAdmin(
+                $"#### FATAL STARTUP ERROR ####\nFailed to prepare the server - pzmanager is shutting down: {ex.Message}");
+
+            throw;
+        }
+
+        await serverManager.PrepareAsync();
 
         var shutdownRequested = 0;
 

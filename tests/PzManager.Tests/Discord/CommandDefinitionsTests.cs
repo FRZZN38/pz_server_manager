@@ -73,6 +73,8 @@ public sealed class CommandDefinitionsTests
             process,
             settings);
 
-        return new AdminCommands(serverManager, new ServerConfigProvisioner(), settings, adminChannelId: 1);
+        return new AdminCommands(
+            serverManager, new ServerConfigProvisioner(), new ServerUpdater(), process,
+            settings, adminChannelId: 1);
     }
 }

@@ -282,6 +282,65 @@ public sealed class ServerManager
         await StartAsync();
     }
 
+    /// <summary>
+    /// Marks the server Updating for the duration of a SteamCMD update
+    /// (see AdminCommands' "update_server" handler) - purely a status flag,
+    /// this class doesn't run the update itself. Callers should call
+    /// <see cref="EndUpdateAsync"/> once the update succeeds, or
+    /// <see cref="MarkCrashedAsync"/> if it fails - never leave the state
+    /// sitting at Updating.
+    /// </summary>
+    public Task BeginUpdateAsync()
+    {
+        Log.Info("[SERVER MANAGER] Update starting.");
+        return SetConnectionStateAsync(ServerConnectionState.Updating);
+    }
+
+    public Task EndUpdateAsync()
+    {
+        Log.Info("[SERVER MANAGER] Update finished.");
+        return SetConnectionStateAsync(ServerConnectionState.Offline);
+    }
+
+    /// <summary>
+    /// Marks the server Creating for the duration of a first-ever bootstrap
+    /// (see <see cref="ServerConfigProvisioner.BootstrapIfNewAsync"/>) -
+    /// same purely-a-status-flag deal as <see cref="BeginUpdateAsync"/>, and
+    /// the same success/failure contract: <see cref="EndCreateAsync"/> on
+    /// success, <see cref="MarkCrashedAsync"/> on failure.
+    /// </summary>
+    public Task BeginCreateAsync()
+    {
+        Log.Info("[SERVER MANAGER] Creating server for the first time.");
+        return SetConnectionStateAsync(ServerConnectionState.Creating);
+    }
+
+    public Task EndCreateAsync()
+    {
+        Log.Info("[SERVER MANAGER] Server creation finished.");
+        return SetConnectionStateAsync(ServerConnectionState.Offline);
+    }
+
+    /// <summary>
+    /// Marks the server Crashed from outside the normal Running crash-retry
+    /// loop (see RunOnceAsync/RunAsync) - for when a one-off operation that
+    /// isn't part of that loop (bootstrap, SteamCMD update, app-boot
+    /// preparation) throws partway through. Unlike a real game crash, there
+    /// is no automatic retry here: an admin has to explicitly try again with
+    /// <see cref="StartAsync"/> or the update command - see AdminCommands,
+    /// which accepts Crashed (in addition to Offline) for both.
+    /// </summary>
+    public Task MarkCrashedAsync()
+    {
+        Log.Warn("[SERVER MANAGER] Marking Crashed after a failed operation.");
+        return SetConnectionStateAsync(ServerConnectionState.Crashed);
+    }
+
+    private Task SetConnectionStateAsync(ServerConnectionState state)
+    {
+        return UpdateStateAsync(s => s with { ConnectionState = state });
+    }
+
     public Task SaveAsync()
     {
         return _process.SendCommand("save");
@@ -400,6 +459,12 @@ public sealed class ServerManager
     private async Task<string> WaitForPerkLogAsync(
         CancellationToken cancellationToken)
     {
+        // Poll every 500ms regardless - not logging doesn't mean not
+        // checking - but only log about once a minute, otherwise this fills
+        // the journal with an identical line twice a second for however
+        // long it takes the first player to connect.
+        var lastLoggedAt = DateTime.MinValue;
+
         while (true)
         {
             try
@@ -410,8 +475,15 @@ public sealed class ServerManager
             }
             catch (FileNotFoundException)
             {
-                Log.Info(
-                    "[SERVER MANAGER] Waiting for PerkLog to be created...");
+                var now = DateTime.UtcNow;
+
+                if (now - lastLoggedAt >= TimeSpan.FromMinutes(1))
+                {
+                    Log.Info(
+                        "[SERVER MANAGER] Waiting for PerkLog to be created...");
+
+                    lastLoggedAt = now;
+                }
 
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(500),
