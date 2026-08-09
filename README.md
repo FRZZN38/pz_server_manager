@@ -40,15 +40,17 @@ Any setting can also be provided as an environment variable instead of (or as an
 ## Server lifecycle
 
 `PzManager` supervises the Project Zomboid server process and keeps a `ServerConnectionState`
-(`Offline`, `Starting`, `Running`, `Stopping`, `Crashed`), reported to the admin Discord channel
-every time it actually changes (not on every minor event, e.g. a player logging in doesn't spam
-the channel).
+(`Offline`, `Starting`, `Running`, `Stopping`, `Crashed`, `Updating`, `Creating`), reported to the
+admin Discord channel every time it actually changes (not on every minor event, e.g. a player
+logging in doesn't spam the channel).
 
 - **Bootstrap on a brand-new server**: if no config file exists yet, `PzManager` starts the real
   server once, waits for it to report `*** SERVER STARTED ***` (confirming it booted correctly,
   not just that it wrote a file), then stops it gracefully before applying the predefined config
   and starting it for real. This lets the game itself generate the `.ini`/`.lua` defaults for the
   exact version running, instead of relying on a checked-in template that could drift out of date.
+  Shows as `Creating` while it's happening - both at `pzmanager` startup and from `/start` (so a
+  fresh install doesn't need a full service restart to trigger it).
 - **Graceful shutdown**: `/stop`, `/restart`, or stopping the manager (Ctrl+C, SIGTERM from
   systemd/Docker) sends `save` + `quit` and waits up to 30s for the process to exit on its own
   before killing it.
@@ -57,7 +59,12 @@ the channel).
 - **Crash recovery**: if the server exits unexpectedly (or fails to start), the manager marks it
   `Crashed` and restarts it automatically with an exponential backoff (5s, 10s, 20s, ... capped at
   60s). The backoff resets after the server has been running healthily for a couple of minutes, or
-  on any explicit start (initial launch or restart).
+  on any explicit start (initial launch or restart). `Crashed` is also where a failed bootstrap
+  (`Creating`) or a failed `/update_server` (`Updating`) ends up - those aren't retried
+  automatically, but `/start` and `/update_server` both accept `Crashed` (in addition to `Offline`)
+  so an admin can just try again. `save`/`broadcast`/`kick`/`start`/`restart`/`stop`/`update_server`
+  all refuse to run while `Creating`/`Updating` are in progress, since those two own the underlying
+  process directly and aren't safe to interrupt.
 
 ## Server configuration (ini / sandbox vars)
 
@@ -97,10 +104,18 @@ Admin commands (restricted to server administrators, usable only in the admin ch
   overrides (`file` only), or all predefined overrides (no options).
 - `/get_config [file] [param_name]` — same 3-tier shape as `/set_config`, read-only. With no
   `param_name`, returns the file(s) as attachment(s) instead of a single value.
+- `/update_server` — update the dedicated server via SteamCMD (`app_update ... validate`). Refuses
+  to run while the server is up (`/stop` first); shows as `Updating` in `/admin_status` meanwhile.
+  SteamCMD only touches the install dir (`Data/pz-server`), not the per-server `.ini`/`.lua`
+  (those live under `ConfigDirectory`), so afterwards only the `MaxMemory` cap is re-applied -
+  `ProjectZomboid64.json` lives inside the install dir too and SteamCMD can silently reset it.
+  `/start` bootstraps a brand new install (and applies the predefined overrides + `MaxMemory` cap)
+  the first time it's ever run, without requiring a `pzmanager` restart to trigger it - a normal
+  `/start` on an already-provisioned server leaves config alone.
 
 Except for `save`/`broadcast`/`kick`/`start`/`restart`/`stop`/`admin_status`/`admin_help`/
-`get_config`, which are ephemeral, `set_config` responses are public — if one admin changes a
-setting, the others need to see it happened.
+`get_config`, which are ephemeral, `set_config`/`update_server` responses are public — if one admin
+changes a setting, the others need to see it happened.
 
 `save`/`broadcast`/`kick`/`start`/`restart`/`stop` acknowledge the action immediately and don't
 wait for the server to finish; the actual state transitions are reported separately via

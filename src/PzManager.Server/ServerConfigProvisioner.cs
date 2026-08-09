@@ -58,11 +58,15 @@ public sealed class ServerConfigProvisioner
     /// is rethrown so the caller aborts startup instead of patching or
     /// running against a server that never came up cleanly.
     /// Returns false without doing anything if the server already has a
-    /// config file (existing server - nothing to bootstrap).
+    /// config file (existing server - nothing to bootstrap). When bootstrap
+    /// is actually about to run, <paramref name="onBootstrapping"/> (if
+    /// given) is awaited first - callers use this to flip a "Creating"
+    /// status flag without this class needing to know about ServerManager.
     /// </summary>
     public async Task<bool> BootstrapIfNewAsync(
         IServerProcess process,
         PzServerSettings settings,
+        Func<Task>? onBootstrapping = null,
         CancellationToken cancellationToken = default)
     {
         var serverDir = Path.Combine(settings.ConfigDirectory, "Server");
@@ -73,6 +77,9 @@ public sealed class ServerConfigProvisioner
 
         if (File.Exists(iniPath))
             return false;
+
+        if (onBootstrapping is not null)
+            await onBootstrapping();
 
         Log.Info(
             "[SERVER CONFIG] No existing config found. Starting the server once to confirm it "
@@ -119,16 +126,18 @@ public sealed class ServerConfigProvisioner
     /// the SteamCMD install and can be silently reset by "app_update ...
     /// validate" (install/update scripts), so it must be reapplied before
     /// every launch rather than relying on it staying put. Only the -Xmx
-    /// entry is touched - every other JVM arg is left as shipped.
+    /// entry is touched - every other JVM arg is left as shipped. Returns
+    /// what it found/did, or null if the file doesn't exist yet (nothing to
+    /// enforce).
     /// </summary>
-    public void EnsureMaxMemory(PzServerSettings settings)
+    public ConfigChange? EnsureMaxMemory(PzServerSettings settings)
     {
         var path = Path.Combine(ServerPaths.DataDirectory, "pz-server", "ProjectZomboid64.json");
 
         if (!File.Exists(path))
         {
             Log.Warn("[SERVER CONFIG] ProjectZomboid64.json not found yet. Skipping max memory enforcement.");
-            return;
+            return null;
         }
 
         var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
@@ -149,8 +158,14 @@ public sealed class ServerConfigProvisioner
             }
         }
 
+        var oldValue = existingIndex >= 0
+            ? vmArgs[existingIndex]!.GetValue<string>()["-Xmx".Length..]
+            : null;
+
+        var change = new ConfigChange("MaxMemory", oldValue, settings.MaxMemory);
+
         if (existingIndex >= 0 && vmArgs[existingIndex]!.GetValue<string>() == xmxArg)
-            return; // already correct, don't touch the file
+            return change; // already correct, don't touch the file
 
         if (existingIndex >= 0)
             vmArgs[existingIndex] = xmxArg;
@@ -164,6 +179,8 @@ public sealed class ServerConfigProvisioner
         }));
 
         Log.Info($"[SERVER CONFIG] Set max JVM heap to {settings.MaxMemory} in ProjectZomboid64.json.");
+
+        return change;
     }
 
     /// <summary>
@@ -229,17 +246,26 @@ public sealed class ServerConfigProvisioner
 
             patcher.ApplyOverrides(destinationPath, overrides);
 
-            Log.Info($"[SERVER CONFIG] Applied {overrides.Count} predefined override(s) to {destinationFileName}.");
+            var changedKeys = new List<string>();
+            var unchangedKeys = new List<string>();
 
-            // Password is never surfaced back (e.g. to Discord) - see the
-            // comment above where it's merged into `overrides`.
+            // Password is never surfaced back (e.g. to Discord, or here in
+            // the log) - see the comment above where it's merged into
+            // `overrides`.
             foreach (var (key, newValue) in overrides)
             {
                 if (key == "Password")
                     continue;
 
-                changes.Add(new ConfigChange(key, oldValues[key], newValue));
+                var change = new ConfigChange(key, oldValues[key], newValue);
+                changes.Add(change);
+
+                (change.Changed ? changedKeys : unchangedKeys).Add(key);
             }
+
+            Log.Info(
+                $"[SERVER CONFIG] {destinationFileName}: changed [{string.Join(", ", changedKeys)}], "
+                + $"unchanged [{string.Join(", ", unchangedKeys)}].");
         }
 
         return changes;

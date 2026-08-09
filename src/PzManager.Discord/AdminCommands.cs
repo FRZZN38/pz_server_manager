@@ -10,22 +10,37 @@ public sealed class AdminCommands
     private static readonly string[] CommandNames =
     [
         "save", "broadcast", "kick", "start", "restart", "stop", "admin_status",
-        "set_config", "get_config", "admin_help"
+        "set_config", "get_config", "update_server", "admin_help"
+    ];
+
+    // Commands that reach into the shared IServerProcess (directly, or via
+    // ServerManager.Save/Broadcast/Kick/Start/Stop/Restart) - unsafe to run
+    // while Creating/Updating currently own that same process. See the
+    // guard in Handle().
+    private static readonly string[] ProcessSensitiveCommands =
+    [
+        "save", "broadcast", "kick", "start", "restart", "stop", "update_server"
     ];
 
     private readonly ServerManager _serverManager;
     private readonly ServerConfigProvisioner _configProvisioner;
+    private readonly ServerUpdater _serverUpdater;
+    private readonly IServerProcess _process;
     private readonly PzServerSettings _settings;
     private readonly ulong _adminChannelId;
 
     public AdminCommands(
         ServerManager serverManager,
         ServerConfigProvisioner configProvisioner,
+        ServerUpdater serverUpdater,
+        IServerProcess process,
         PzServerSettings settings,
         ulong adminChannelId)
     {
         _serverManager = serverManager;
         _configProvisioner = configProvisioner;
+        _serverUpdater = serverUpdater;
+        _process = process;
         _settings = settings;
         _adminChannelId = adminChannelId;
     }
@@ -129,6 +144,11 @@ public sealed class AdminCommands
                 "Field name (see /set_config). file is optional - both files are searched if omitted.",
                 isRequired: false);
 
+        var updateServer = new SlashCommandBuilder()
+            .WithName("update_server")
+            .WithDescription("Update the Project Zomboid dedicated server via SteamCMD. Server must be stopped first.")
+            .WithDefaultMemberPermissions(GuildPermission.Administrator);
+
         var help = new SlashCommandBuilder()
             .WithName("admin_help")
             .WithDescription("Show available admin commands.")
@@ -138,7 +158,7 @@ public sealed class AdminCommands
         [
             save, broadcast, kick,
             start, restart, stop, status,
-            setConfig, getConfig, help
+            setConfig, getConfig, updateServer, help
         ];
     }
 
@@ -161,13 +181,34 @@ public sealed class AdminCommands
         // real state transitions are announced separately via
         // ServerManager.StateChanged anyway) - is ephemeral to keep the
         // channel from filling up with messages only the invoker cares about.
-        var ephemeral = command.Data.Name != "set_config";
+        var ephemeral = command.Data.Name is not ("set_config" or "update_server");
 
         // Some commands (stop, in particular) take longer than Discord's 3s
         // ack window - a graceful save+quit can run up to 30s. Defer first
         // so Discord always sees an immediate ack, then send the real
         // result as a followup once the work is done.
         await command.DeferAsync(ephemeral: ephemeral);
+
+        // Creating/Updating mean BootstrapIfNewAsync/ServerUpdater currently
+        // own the shared IServerProcess directly, outside of ServerManager's
+        // own session - any of these commands reaching in at the same time
+        // (an admin /kick-ing someone mid-bootstrap, a /stop racing the
+        // update script) would step on that. ServerManager's own Offline
+        // checks below only catch this by accident (Creating/Updating both
+        // read as "not Offline"), so make it an explicit, clearly-worded
+        // rejection instead.
+        if (ProcessSensitiveCommands.Contains(command.Data.Name)
+            && _serverManager.State.ConnectionState is ServerConnectionState.Creating or ServerConnectionState.Updating)
+        {
+            var activity = _serverManager.State.ConnectionState == ServerConnectionState.Creating
+                ? "being created for the first time"
+                : "being updated";
+
+            await command.FollowupAsync(
+                $"The server is currently {activity} - try again in a moment.", ephemeral: ephemeral);
+
+            return;
+        }
 
         switch (command.Data.Name)
         {
@@ -199,11 +240,70 @@ public sealed class AdminCommands
                 break;
 
             case "start":
-                if (_serverManager.State.ConnectionState != ServerConnectionState.Offline)
+                // Crashed is accepted too - it's how a failed Creating
+                // attempt (see the catch below) shows up, and the whole
+                // point of surfacing it that way instead of silently
+                // resetting to Offline is that an admin can just /start
+                // again to retry.
+                if (_serverManager.State.ConnectionState is not (ServerConnectionState.Offline
+                    or ServerConnectionState.Crashed))
                 {
                     await command.FollowupAsync(
                         "The server is already running (or starting).", ephemeral: ephemeral);
 
+                    break;
+                }
+
+                // Covers the "never run before" case (no config files yet)
+                // without requiring a full pzmanager restart to trigger it.
+                // BootstrapIfNewAsync is a cheap no-op (early exit) once a
+                // config already exists, but the predefined overrides and
+                // the max-heap cap only need (re)applying right after it
+                // actually generates fresh config files - a normal /start
+                // on an already-provisioned server shouldn't silently
+                // stomp on settings an admin changed by hand since then.
+                var creating = false;
+
+                try
+                {
+                    var wasBootstrapped = await _configProvisioner.BootstrapIfNewAsync(
+                        _process, _settings,
+                        onBootstrapping: async () =>
+                        {
+                            creating = true;
+
+                            // BootstrapIfNewAsync can take a few minutes (it
+                            // starts the game once for real, waits for it to
+                            // report started, then stops it again) - without
+                            // this, Discord shows nothing but "thinking..."
+                            // the whole time, which reads as the command
+                            // having hung.
+                            await command.FollowupAsync(
+                                "No existing server found - creating it for the first time "
+                                + "(this can take a few minutes)...",
+                                ephemeral: ephemeral);
+
+                            await _serverManager.BeginCreateAsync();
+                        });
+
+                    if (wasBootstrapped)
+                    {
+                        _configProvisioner.SetPredefinedConfig(_settings);
+                        _configProvisioner.EnsureMaxMemory(_settings);
+                        await _serverManager.EndCreateAsync();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Anything that breaks this flow goes to Crashed rather
+                    // than getting stuck in Creating or silently resetting
+                    // to Offline as if nothing happened - Crashed is the
+                    // one state that already means "an admin needs to look
+                    // at this, but /start (or /update_server) can retry".
+                    if (creating)
+                        await _serverManager.MarkCrashedAsync();
+
+                    await RespondError(command, "start", ex, ephemeral);
                     break;
                 }
 
@@ -280,28 +380,9 @@ public sealed class AdminCommands
                         break;
                     }
 
-                    var changed = predefinedChanges.Where(c => c.Changed).ToList();
-                    var unchanged = predefinedChanges.Where(c => !c.Changed).ToList();
+                    var summary = $"Server config re-applied ({scope})." + DescribeChanges(predefinedChanges);
 
-                    var summary = $"Server config re-applied ({scope}).";
-
-                    if (changed.Count > 0)
-                    {
-                        var changedLines = changed
-                            .Select(c => $"- `{c.ParamName}`: `{c.OldValue ?? "(unset)"}` -> `{c.NewValue}`");
-
-                        summary += $"\nChanged:\n{string.Join('\n', changedLines)}";
-                    }
-
-                    if (unchanged.Count > 0)
-                    {
-                        var unchangedLines = unchanged
-                            .Select(c => $"- `{c.ParamName}`: `{c.NewValue}`");
-
-                        summary += $"\nAlready set:\n{string.Join('\n', unchangedLines)}";
-                    }
-
-                    if (changed.Count > 0)
+                    if (predefinedChanges.Any(c => c.Changed))
                         summary += RunningWarningSuffix();
 
                     await command.FollowupAsync(summary, ephemeral: ephemeral);
@@ -408,7 +489,81 @@ public sealed class AdminCommands
                 }
 
                 break;
+
+            case "update_server":
+                // Crashed accepted too, same reasoning as /start - it's how
+                // a failed update shows up, and an admin should be able to
+                // just retry with /update_server.
+                if (_serverManager.State.ConnectionState is not (ServerConnectionState.Offline
+                    or ServerConnectionState.Crashed))
+                {
+                    await command.FollowupAsync(
+                        "The server must be stopped before updating. Use `/stop` first.", ephemeral: ephemeral);
+
+                    break;
+                }
+
+                await command.FollowupAsync("Server update started (this can take a while)...", ephemeral: ephemeral);
+
+                await _serverManager.BeginUpdateAsync();
+
+                try
+                {
+                    await _serverUpdater.RunAsync();
+
+                    // SteamCMD's "app_update ... validate" only touches
+                    // Data/pz-server (the install dir) - the per-server
+                    // .ini/.lua overrides live under ConfigDirectory
+                    // (Data/Zomboid), a completely separate tree it never
+                    // writes to, so only the max-heap cap (which does live
+                    // inside Data/pz-server, in ProjectZomboid64.json) needs
+                    // reapplying here.
+                    var maxMemoryChange = _configProvisioner.EnsureMaxMemory(_settings);
+                    var updateChanges = maxMemoryChange is null
+                        ? []
+                        : new List<ConfigChange> { maxMemoryChange };
+
+                    await _serverManager.EndUpdateAsync();
+
+                    await command.FollowupAsync(
+                        "Server update completed." + DescribeChanges(updateChanges), ephemeral: ephemeral);
+                }
+                catch (Exception ex)
+                {
+                    // Same reasoning as /start's catch: a failed update
+                    // goes to Crashed, not back to a falsely-clean Offline
+                    // and not stuck in Updating - /update_server can retry.
+                    await _serverManager.MarkCrashedAsync();
+                    await RespondError(command, "update_server", ex, ephemeral);
+                }
+
+                break;
         }
+    }
+
+    private static string DescribeChanges(IReadOnlyList<ConfigChange> changes)
+    {
+        var changed = changes.Where(c => c.Changed).ToList();
+        var unchanged = changes.Where(c => !c.Changed).ToList();
+        var summary = "";
+
+        if (changed.Count > 0)
+        {
+            var changedLines = changed
+                .Select(c => $"- `{c.ParamName}`: `{c.OldValue ?? "(unset)"}` -> `{c.NewValue}`");
+
+            summary += $"\nChanged:\n{string.Join('\n', changedLines)}";
+        }
+
+        if (unchanged.Count > 0)
+        {
+            var unchangedLines = unchanged
+                .Select(c => $"- `{c.ParamName}`: `{c.NewValue}`");
+
+            summary += $"\nAlready set:\n{string.Join('\n', unchangedLines)}";
+        }
+
+        return summary;
     }
 
     private static string DescribeFile(string fileChoice)
